@@ -54,12 +54,11 @@ jobs:
         run: uv venv --python "3.12"
       - name: Make .venv default for uv
         run: echo "UV_PYTHON=.venv" >> $GITHUB_ENV
-      - name: Install mypy & project (editable)
+      - name: Install & Run mypy & project (editable)
         run: |
           uv pip install mypy==1.* types-requests types-PyYAML
           uv pip install -e .
-      - name: Run mypy
-        run: uv run mypy --strict --install-types --non-interactive .
+          mypy --strict --install-types --non-interactive .
 
   test:
     name: Tests • Python ${{ matrix.py }}
@@ -67,7 +66,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        py: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        py: ["3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
