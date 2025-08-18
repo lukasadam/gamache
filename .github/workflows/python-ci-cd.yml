@@ -1,4 +1,26 @@
-# Escape GitHub expressions so Cookiecutter won't parse them
+
+Using Python 3.12.3 environment at: /usr
+error: The interpreter at /usr is externally managed, and indicates the following:
+
+  To install Python packages system-wide, try apt install
+  python3-xyz, where xyz is the package you are trying to
+  install.
+
+  If you wish to install a non-Debian-packaged Python package,
+  create a virtual environment using python3 -m venv path/to/venv.
+  Then use path/to/venv/bin/python and path/to/venv/bin/pip. Make
+  sure you have python3-full installed.
+
+  If you wish to install a non-Debian packaged Python application,
+  it may be easiest to use pipx install xyz, which will manage a
+  virtual environment for you. Make sure you have pipx installed.
+
+  See /usr/share/doc/python3.12/README.venv for more information.
+
+Consider creating a virtual environment with `uv venv`.
+Error: Process completed with exit code 2.
+
+
 name: gamache CI/CD (uv)
 on:
   push:
@@ -33,6 +55,8 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           python-version: "3.12"
+      - name: Create venv
+        run: uv venv --python "3.12"
       - name: Install dev tools
         run: |
           uv pip install --system ruff==0.5.* black==24.* isort==5.* pre-commit
@@ -47,6 +71,8 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           python-version: "3.12"
+      - name: Create venv
+        run: uv venv --python "3.12"
       - name: Install mypy & project (editable)
         run: |
           uv pip install --system mypy==1.* types-requests types-PyYAML
@@ -66,6 +92,8 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           python-version: ${{ matrix.py }}
+      - name: Create venv
+        run: uv venv --python "3.12"
       - name: Install test deps
         run: uv pip install --system -e .[test] pytest pytest-cov
       - name: Run pytest with coverage
@@ -100,6 +128,8 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           python-version: "3.12"
+      - name: Create venv
+        run: uv venv --python "3.12"
       - name: Install audit tools
         run: uv pip install --system pip-audit bandit
       - name: pip-audit (dependencies)
@@ -124,6 +154,8 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           python-version: "3.12"
+      - name: Create venv
+        run: uv venv --python "3.12"
       - name: Build sdist & wheel
         run: |
           uv pip install --system build twine
@@ -187,6 +219,8 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           python-version: "3.12"
+      - name: Create venv
+        run: uv venv --python "3.12"
       - name: Install docs deps
         run: |
           uv pip install --system -e .[docs]
