@@ -23,3 +23,9 @@ mlruns/
 
 # notebooks
 .ipynb_checkpoints/
+
+# Ignore uv lock
+uv.lock
+
+# ignore .egg-info directories
+*.egg-info/

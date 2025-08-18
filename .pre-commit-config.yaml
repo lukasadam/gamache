@@ -59,11 +59,13 @@ repos:
         # Add words to ignore in .codespellignore or via --ignore-words-list
         # args: [--ignore-words-list=crate,fo]
         additional_dependencies: [tomli]   # to read pyproject.toml
+
   - repo: https://github.com/PyCQA/bandit
     rev: 1.7.9
     hooks:
       - id: bandit
-        args: [-q, -r, ., -x, tests]
+        args: ["-r", "src"]  # recursive scan
+        pass_filenames: false
 
 # Global excludes to reduce noise
 exclude: |
