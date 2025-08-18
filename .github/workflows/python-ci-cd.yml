@@ -1,5 +1,5 @@
-# Escape GitHub expressions so Cookiecutter won't parse themname: gamache CI/CD (uv)
-
+# Escape GitHub expressions so Cookiecutter won't parse them
+name: gamache CI/CD (uv)
 on:
   push:
     branches: [ "**" ]
@@ -89,14 +89,16 @@ jobs:
           name: coverage-${{ matrix.py }}.xml
           path: coverage.xml
           if-no-files-found: error
+      # Codecov step (optional)
       - name: Upload to Codecov (optional)
-        if: env.CODECOV_TOKEN != ''
+        if: ${{ env.CODECOV_TOKEN != '' }}
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
           flags: py${{ matrix.py }}
           fail_ci_if_error: false
+
 
   security:
     name: Security Scan
@@ -160,14 +162,16 @@ jobs:
         with:
           name: dist
           path: dist
+      # In the publish job
       - name: Publish via API token (default)
-        if: ${{ secrets.PYPI_API_TOKEN }} != ''
+        if: ${{ secrets.PYPI_API_TOKEN != '' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           user: __token__
           password: ${{ secrets.PYPI_API_TOKEN }}
+
       - name: Publish via OIDC (trusted publishing)
-        if: ${{ secrets.PYPI_API_TOKEN }} == ''
+        if: ${{ secrets.PYPI_API_TOKEN == '' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           skip-existing: true
