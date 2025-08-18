@@ -161,13 +161,13 @@ jobs:
           name: dist
           path: dist
       - name: Publish via API token (default)
-        if: secrets.PYPI_API_TOKEN != ''
+        if: ${{ secrets.PYPI_API_TOKEN }} != ''
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           user: __token__
           password: ${{ secrets.PYPI_API_TOKEN }}
       - name: Publish via OIDC (trusted publishing)
-        if: secrets.PYPI_API_TOKEN == ''
+        if: ${{ secrets.PYPI_API_TOKEN }} == ''
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           skip-existing: true
