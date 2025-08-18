@@ -2,10 +2,9 @@
 
 on:
   push:
-    branches: [ main, develop, "feature/**" ]
-    tags-ignore: [ "v*" ]
+    branches: [ "**" ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ "**" ]
   release:
     types: [ published ]
   workflow_dispatch:
