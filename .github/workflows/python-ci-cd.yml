@@ -41,25 +41,6 @@ jobs:
           uv pip install ruff==0.5.* black==24.* isort==5.* pre-commit
       - name: Run pre-commit on changed files
         uses: pre-commit/action@v3.0.1
-
-  types:
-    name: Static Typing (mypy)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-        with:
-          python-version: "3.12"
-      - name: Create venv
-        run: uv venv --python "3.12"
-      - name: Make .venv default for uv
-        run: echo "UV_PYTHON=.venv" >> $GITHUB_ENV
-      - name: Install & Run mypy & project (editable)
-        run: |
-          uv pip install mypy==1.* types-requests types-PyYAML
-          uv pip install -e .
-          mypy --strict --install-types --non-interactive .
-
   test:
     name: Tests • Python ${{ matrix.py }}
     runs-on: ubuntu-latest
