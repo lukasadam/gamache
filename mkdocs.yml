@@ -1,0 +1,46 @@
+site_name: gamache
+site_description: "gamache documentation"
+site_url: https://lukasadam.github.io/gamache/
+repo_url: https://github.com/lukasadam/gamache
+repo_name: lukasadam/gamache
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.indexes
+    - search.highlight
+    - content.code.copy
+
+plugins:
+  - search
+  - mkdocs-jupyter:
+      execute: false        # RTD builds are resource-limited; keep execution off
+      include_source: true  # show the notebook source link
+      ignore_h1_titles: true
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            show_root_heading: true
+            merge_init_into_class: true
+            show_source: true
+            show_signature: true
+            separate_signature: true
+            members_order: source
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Usage: usage.md
+  - API Reference: api.md
+  - Notebooks:
+      - "Exploration": notebooks/01_Trial.ipynb

@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.py[cod]
+.dist-info/
+.build/
+dist/
+build/
+.site/
+site/
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+
+# data & models
+data/*
+!data/.gitkeep
+models/*
+!models/.gitkeep
+mlruns/
+
+# notebooks
+.ipynb_checkpoints/

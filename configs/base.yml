@@ -1,0 +1,25 @@
+project:
+  name: "gamache"
+  seed: 42
+
+paths:
+  data_dir: "data"
+  raw_dir: "data/raw"
+  interim_dir: "data/interim"
+  processed_dir: "data/processed"
+  figures_dir: "reports/figures"
+  models_dir: "models"
+
+datasets:
+  # examples; customize/remove
+  iris:
+    uri: "https://raw.githubusercontent.com/mwaskom/seaborn-data/master/iris.csv"
+    format: "csv"
+  customers:
+    uri: "data/raw/customers.csv"
+    format: "csv"
+
+training:
+  batch_size: 64
+  epochs: 5
+  lr: 0.001

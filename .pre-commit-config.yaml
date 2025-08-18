@@ -1,0 +1,79 @@
+
+# See https://pre-commit.com
+# Install + run:
+#   uv pip install pre-commit
+#   uv run pre-commit install
+#   uv run pre-commit run --all-files
+
+default_language_version:
+  python: python3.12
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.7
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/psf/black
+    rev: 24.8.0
+    hooks:
+      - id: black
+
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: detect-private-key
+
+  - repo: https://github.com/nbQA-dev/nbQA
+    rev: 1.9.0
+    hooks:
+      - id: nbqa-ruff
+        args: [--extend-select=I]
+        additional_dependencies: [ruff==0.5.7]
+      - id: nbqa-black
+        additional_dependencies: [black==24.8.0]
+      - id: nbqa-isort
+        additional_dependencies: [isort==5.13.2]
+
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.7.1
+    hooks:
+      - id: nbstripout
+        files: ^notebooks/|^research/       # strip these
+        exclude: ^docs/notebooks/           # but NOT docs notebooks
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.3.0
+    hooks:
+      - id: codespell
+        # Add words to ignore in .codespellignore or via --ignore-words-list
+        # args: [--ignore-words-list=crate,fo]
+        additional_dependencies: [tomli]   # to read pyproject.toml
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.9
+    hooks:
+      - id: bandit
+        args: [-q, -r, ., -x, tests]
+
+# Global excludes to reduce noise
+exclude: |
+  (?x)(
+    ^dist/|
+    ^build/|
+    ^site/|^_site/|
+    ^.venv/|
+    ^.github/|
+    ^chart/.*\.yaml$|   # Helm templates often use Go templating
+    ^docs/|
+    ^k8s/
+  )

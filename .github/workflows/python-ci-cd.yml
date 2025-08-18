@@ -1,0 +1,233 @@
+# Escape GitHub expressions so Cookiecutter won't parse themname: gamache CI/CD (uv)
+
+on:
+  push:
+    branches: [ main, develop, "feature/**" ]
+    tags-ignore: [ "v*" ]
+  pull_request:
+    branches: [ main, develop ]
+  release:
+    types: [ published ]
+  workflow_dispatch:
+    inputs:
+      publish_to_pypi:
+        description: "Publish to PyPI (requires PYPI_API_TOKEN or OIDC)"
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_DEFAULT: "3.12"
+  PACKAGE_NAME: "gamache"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_NO_PYTHON_VERSION_WARNING: "1"
+  COVERAGE_MIN: "85"
+
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+      - name: Install dev tools
+        run: |
+          uv pip install --system ruff==0.5.* black==24.* isort==5.* pre-commit
+      - name: Run pre-commit on changed files
+        uses: pre-commit/action@v3.0.1
+
+  types:
+    name: Static Typing (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+      - name: Install mypy & project (editable)
+        run: |
+          uv pip install --system mypy==1.* types-requests types-PyYAML
+          uv pip install --system -e .
+      - name: Run mypy
+        run: uv run mypy --strict --install-types --non-interactive .
+
+  test:
+    name: Tests • Python ${{ matrix.py }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        py: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: ${{ matrix.py }}
+      - name: Install test deps
+        run: uv pip install --system -e .[test] pytest pytest-cov
+      - name: Run pytest with coverage
+        run: |
+          uv run pytest -q \
+            --maxfail=1 \
+            --cov=gamache \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --cov-fail-under=$COVERAGE_MIN
+      - name: Upload coverage.xml artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.py }}.xml
+          path: coverage.xml
+          if-no-files-found: error
+      - name: Upload to Codecov (optional)
+        if: env.CODECOV_TOKEN != ''
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          flags: py${{ matrix.py }}
+          fail_ci_if_error: false
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+      - name: Install audit tools
+        run: uv pip install --system pip-audit bandit
+      - name: pip-audit (dependencies)
+        run: |
+          if [ -f requirements.txt ]; then
+            uv run pip-audit -r requirements.txt || true
+          else
+            uv run pip-audit -s || true
+          fi
+      - name: Bandit (source code security)
+        run: uv run bandit -q -r $GITHUB_WORKSPACE -x tests
+
+  build:
+    name: Build Package
+    runs-on: ubuntu-latest
+    needs: [lint, types, test, security]
+    if: |
+      github.event_name != 'pull_request' &&
+      (startsWith(github.ref, 'refs/heads/') || github.event_name == 'release' || github.event_name == 'workflow_dispatch')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+      - name: Build sdist & wheel
+        run: |
+          uv pip install --system build twine
+          uv run python -m build
+          uv run twine check dist/*
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+  publish:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: build
+    if: >-
+      (github.event_name == 'release' && github.event.action == 'published') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish_to_pypi)
+    environment:
+      name: pypi
+      url: https://pypi.org/p/gamache
+    permissions:
+      contents: read
+    # If using PyPI OIDC (Trusted Publishing), uncomment the next line:
+    #  id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Publish via API token (default)
+        if: secrets.PYPI_API_TOKEN != ''
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}
+      - name: Publish via OIDC (trusted publishing)
+        if: secrets.PYPI_API_TOKEN == ''
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+
+  containerize:
+    name: Build & Push Container (Buildah)
+    runs-on: ubuntu-latest
+    needs: [lint, types, test, security]
+    if: |
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || github.event_name == 'release' || github.event_name == 'workflow_dispatch')
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: ${{ github.repository }}
+      IMAGE_TAG: ${{ github.sha }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Buildah & Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install podman buildah
+          buildah info
+
+      - name: Log in to GHCR
+        run: |
+          echo ${{ secrets.GITHUB_TOKEN }} | podman login "$REGISTRY" -u ${{ github.actor }} --password-stdin
+
+      - name: Build image with Buildah
+        run: |
+          IMAGE_REF="$REGISTRY/$IMAGE_NAME:$IMAGE_TAG"
+          buildah bud --layers -t "$IMAGE_REF" -f Dockerfile .
+          echo "IMAGE_REF=$IMAGE_REF" >> $GITHUB_ENV
+
+      - name: Tag release-friendly latest or tag
+        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then TAG=${GITHUB_REF#refs/tags/}; else TAG=latest; fi
+          buildah tag "$IMAGE_REF" "$REGISTRY/$IMAGE_NAME:$TAG"
+
+      - name: Push images to registry
+        run: |
+          buildah push "$IMAGE_REF" "docker://$IMAGE_REF"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then TAG=${GITHUB_REF#refs/tags/}; else TAG=latest; fi
+          buildah push "$IMAGE_REF" "docker://$REGISTRY/$IMAGE_NAME:$TAG"
+  docs_check:
+    name: Docs Build (MkDocs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+      - name: Install docs deps
+        run: |
+          uv pip install --system -e .[docs]
+      - name: Build docs (strict)
+        run: |
+          uv run mkdocs build --strict

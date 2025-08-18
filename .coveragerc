@@ -1,0 +1,8 @@
+[run]
+branch = True
+source = gamache
+
+[report]
+omit =
+  tests/*
+show_missing = True
