@@ -1,12 +1,13 @@
 from __future__ import annotations
+
 from pathlib import Path
 from typing import Dict, Literal, Optional
 
 import yaml
+from dotenv import load_dotenv
+from platformdirs import user_cache_dir
 from pydantic import BaseModel, field_validator
 from pydantic_settings import BaseSettings
-from platformdirs import user_cache_dir
-from dotenv import load_dotenv
 
 # Load .env if present (for tokens, URIs, etc.)
 load_dotenv()

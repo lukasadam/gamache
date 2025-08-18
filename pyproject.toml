@@ -30,7 +30,7 @@ dev = [
   "isort>=5",
   "mypy>=1",
   "pre-commit>=3.7",
-  "nbqa>=1.9",           
+  "nbqa>=1.9",
   "nbmake>=1.5"
 ]
 test = [
@@ -76,6 +76,7 @@ addopts = "-q"
 
 [tool.ruff]
 line-length = 100
+ignore = ["E741"]
 
 [tool.black]
 line-length = 100
