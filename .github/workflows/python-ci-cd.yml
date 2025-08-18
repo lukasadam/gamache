@@ -34,9 +34,11 @@ jobs:
           python-version: "3.12"
       - name: Create venv
         run: uv venv --python "3.12"
+      - name: Make .venv default for uv
+        run: echo "UV_PYTHON=.venv" >> $GITHUB_ENV
       - name: Install dev tools
         run: |
-          uv pip install --system ruff==0.5.* black==24.* isort==5.* pre-commit
+          uv pip install ruff==0.5.* black==24.* isort==5.* pre-commit
       - name: Run pre-commit on changed files
         uses: pre-commit/action@v3.0.1
 
@@ -50,10 +52,12 @@ jobs:
           python-version: "3.12"
       - name: Create venv
         run: uv venv --python "3.12"
+      - name: Make .venv default for uv
+        run: echo "UV_PYTHON=.venv" >> $GITHUB_ENV
       - name: Install mypy & project (editable)
         run: |
-          uv pip install --system mypy==1.* types-requests types-PyYAML
-          uv pip install --system -e .
+          uv pip install mypy==1.* types-requests types-PyYAML
+          uv pip install -e .
       - name: Run mypy
         run: uv run mypy --strict --install-types --non-interactive .
 
@@ -71,8 +75,10 @@ jobs:
           python-version: ${{ matrix.py }}
       - name: Create venv
         run: uv venv --python "3.12"
+      - name: Make .venv default for uv
+        run: echo "UV_PYTHON=.venv" >> $GITHUB_ENV
       - name: Install test deps
-        run: uv pip install --system -e .[test] pytest pytest-cov
+        run: uv pip install -e .[test] pytest pytest-cov
       - name: Run pytest with coverage
         run: |
           uv run pytest -q \
@@ -107,8 +113,10 @@ jobs:
           python-version: "3.12"
       - name: Create venv
         run: uv venv --python "3.12"
+      - name: Make .venv default for uv
+        run: echo "UV_PYTHON=.venv" >> $GITHUB_ENV
       - name: Install audit tools
-        run: uv pip install --system pip-audit bandit
+        run: uv pip install pip-audit bandit
       - name: pip-audit (dependencies)
         run: |
           if [ -f requirements.txt ]; then
@@ -133,9 +141,11 @@ jobs:
           python-version: "3.12"
       - name: Create venv
         run: uv venv --python "3.12"
+      - name: Make .venv default for uv
+        run: echo "UV_PYTHON=.venv" >> $GITHUB_ENV
       - name: Build sdist & wheel
         run: |
-          uv pip install --system build twine
+          uv pip install build twine
           uv run python -m build
           uv run twine check dist/*
       - name: Upload dist artifacts
@@ -198,9 +208,11 @@ jobs:
           python-version: "3.12"
       - name: Create venv
         run: uv venv --python "3.12"
+      - name: Make .venv default for uv
+        run: echo "UV_PYTHON=.venv" >> $GITHUB_ENV
       - name: Install docs deps
         run: |
-          uv pip install --system -e .[docs]
+          uv pip install -e .[docs]
       - name: Build docs (strict)
         run: |
           uv run mkdocs build --strict
