@@ -76,7 +76,7 @@ addopts = "-q"
 
 [tool.ruff]
 line-length = 100
-ignore = ["E741"]
+lint.ignore = ["E741"]
 
 [tool.black]
 line-length = 100
