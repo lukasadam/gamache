@@ -36,11 +36,11 @@ dev = [
 test = [
   "pytest>=8",
   "pytest-cov>=4",
-  "dotenv>=1.0",
-  "platformdirs>=4.2",
   "pydantic>=2.7",
   "pydantic-settings>=2.3",
   "PyYAML>=6.0",
+  "python-dotenv>=1.0",
+  "platformdirs>=4.2",
 ]
 docs = [
   "mkdocs>=1.6",
@@ -53,13 +53,6 @@ docs = [
   "griffe>=0.48",
   "mkdocs-jupyter>=0.25",
   "nbformat>=5.10"
-]
-config = [
-  "pydantic>=2.7",
-  "pydantic-settings>=2.3",
-  "PyYAML>=6.0",
-  "python-dotenv>=1.0",
-  "platformdirs>=4.2",
 ]
 dataio = [
   "fsspec>=2024.2.0",
