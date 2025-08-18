@@ -99,7 +99,6 @@ jobs:
           flags: py${{ matrix.py }}
           fail_ci_if_error: false
 
-
   security:
     name: Security Scan
     runs-on: ubuntu-latest
