@@ -72,7 +72,7 @@ where = ["src"]
 include = ["gamache*"]
 
 [tool.pytest.ini_options]
-addopts = "-q"
+addopts = "-q --ignore=src/gamache/config.py"
 
 [tool.ruff]
 line-length = 100
