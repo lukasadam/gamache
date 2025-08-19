@@ -1,6 +1,4 @@
-<img align="right" src="docs/assets/gamache_logo.png" alt="gamache logo" width="160">
-
-# Gamache
+<img  src="docs/assets/gamache_logo.png" alt="gamache logo" width="300">
 
 [![gamache CI/CD (uv)](https://github.com/lukasadam/gamache/actions/workflows/python-ci-cd.yml/badge.svg)](https://github.com/lukasadam/gamache/actions/workflows/python-ci-cd.yml)
 [![Coverage](https://codecov.io/gh/lukasadam/gamache/branch/develop/graph/badge.svg)](https://codecov.io/gh/lukasadam/gamache)
@@ -9,9 +7,9 @@
 [![Ruff](https://img.shields.io/badge/lint-ruff-1f6feb)](https://docs.astral.sh/ruff/)
 [![Bandit](https://img.shields.io/badge/security-bandit-f58549)](https://bandit.readthedocs.io)
 
-A lightweight toolkit for **GAM-based pseudotime testing and visualization** in Python.
+# Gamache
 
----
+**gamache** (`"ga-mash"` | /ɡəˈmɑːʃ/) — a lightweight toolkit for **GAM-based pseudotime testing and visualization** in Python.
 
 ## Motivation
 
