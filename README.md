@@ -1,4 +1,4 @@
-<img  src="docs/assets/gamache_logo.png" alt="gamache logo" width="300">
+<img  src="docs/assets/gamache_logo.png" alt="gamache logo" width="250">
 
 [![gamache CI/CD (uv)](https://github.com/lukasadam/gamache/actions/workflows/python-ci-cd.yml/badge.svg)](https://github.com/lukasadam/gamache/actions/workflows/python-ci-cd.yml)
 [![Coverage](https://codecov.io/gh/lukasadam/gamache/branch/develop/graph/badge.svg)](https://codecov.io/gh/lukasadam/gamache)
@@ -10,6 +10,8 @@
 # Gamache
 
 **gamache** (`"ga-mash"` | /ɡəˈmɑːʃ/) — a lightweight toolkit for **GAM-based pseudotime testing and visualization** in Python.
+
+> The name is inspired by the smooth chocolate glaze. Just as ganache blends ingredients into a seamless emulsion, **Gamache** blends generalized additive models with pseudotime analysis to create smooth, interpretable gene expression trends.
 
 ## Motivation
 
