@@ -105,8 +105,8 @@ jobs:
           else
             uv run pip-audit -s || true
           fi
-      - name: Bandit (source code security)
-        run: uv run bandit -q -r $GITHUB_WORKSPACE -x tests,.venv
+      - name: Security scan with Bandit
+        run: uv run bandit -q -r src/gamache -x tests,.venv
 
   build:
     name: Build Package

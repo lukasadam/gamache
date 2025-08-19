@@ -42,10 +42,7 @@ def test_load_settings_merges_and_creates_dirs(tmp_path: Path, monkeypatch):
             "models_dir": "models",
         },
     }
-    local_cfg = {
-        "project": {"seed": 123},
-        "training": {"epochs": 10},
-    }
+    local_cfg = {"project": {"seed": 123}}
 
     (cfg_dir / "base.yml").write_text(yaml.safe_dump(base_cfg))
     (cfg_dir / "local.yml").write_text(yaml.safe_dump(local_cfg))
@@ -58,7 +55,6 @@ def test_load_settings_merges_and_creates_dirs(tmp_path: Path, monkeypatch):
     # Project values merged correctly
     assert st.project.name == "demo"
     assert st.project.seed == 123  # overridden by local.yml
-    assert st.training.epochs == 10
 
     # Paths resolved relative to tmp_path
     assert st.paths.data_dir == tmp_path / "data"

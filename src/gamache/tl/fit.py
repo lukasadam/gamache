@@ -1,3 +1,5 @@
+"""Functionality to fit a single-trajectory Negative Binomial Generalized Additive Model (NB-GAM) to pseudotime data."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -14,14 +16,7 @@ from .splines import bspline_basis, penalty_matrix
 
 @dataclass
 class PseudotimeGAM:
-    """
-    Single-trajectory NB-GAM with a selectable backend:
-      - backend="irls": fast penalized IRLS
-
-    Results are written to:
-      adata.var[f"{key}_alpha"], adata.var[f"{key}_edf"],
-      adata.varm[f"{key}_coef"],  (and optionally varm[f"{key}_cov"])
-    """
+    """Single-trajectory NB-GAM with a selectable backend."""
 
     # config / inputs
     adata: ad.AnnData = field(repr=False)
@@ -49,6 +44,7 @@ class PseudotimeGAM:
     _counts_layer: Optional[str] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        """Initialize the PseudotimeGAM object by validating inputs and constructing the model."""
         # ----- pseudotime -----
         if self.pseudotime_key not in self.adata.obs:
             raise ValueError(
@@ -150,7 +146,27 @@ class PseudotimeGAM:
         *,
         store_cov: bool = False,
     ) -> None:
-        """Fit per gene with the selected backend and write results to AnnData."""
+        """Fit per gene with the selected backend and write results to AnnData.
+
+        Parameters
+        ----------
+        genes : Optional[Sequence[Union[str, int]]], optional
+            Genes to fit. If None, fit all genes in adata.var_names (default: None).
+        store_cov : bool, optional
+            Whether to store the covariance matrix of the estimated coefficients in adata.varm
+            under key f"{self.key}_cov". This is only applicable for the IRLS backend
+            (default: False).
+
+        Raises
+        ------
+        ValueError
+            If the backend is not recognized or if the gene indices do not match.
+
+        Notes
+        -----
+        This method fits a penalized weighted least squares model for each gene using the specified backend.
+        The results are stored in the AnnData object under the specified keys.
+        """
         adata = self.adata
         X, S, offset = self.X, self.S, self.offset
         obs_w = self._obs_weight_mask
@@ -199,6 +215,22 @@ class PseudotimeGAM:
     def fitted_values(
         self, gene: Union[str, int], *, type: str = "response", keep_nan: bool = True
     ) -> np.ndarray:
+        """Get fitted values for a specific gene.
+
+        Parameters
+        ----------
+        gene : Union[str, int]
+            The gene to get fitted values for.
+        type : str, optional
+            The type of fitted values to return. Can be "link" or "response" (default: "response").
+        keep_nan : bool, optional
+            Whether to keep NaN values in the output (default: True).
+
+        Returns
+        -------
+        np.ndarray
+            The fitted values for the specified gene.
+        """
         beta = self._get_beta(gene)
         eta = self.offset + self.X @ beta
         out = eta if type == "link" else np.exp(eta)
@@ -215,6 +247,24 @@ class PseudotimeGAM:
         *,
         type: str = "response",
     ) -> np.ndarray:
+        """Predict fitted values for a specific gene at new times.
+
+        Parameters
+        ----------
+        gene : Union[str, int]
+            The gene to predict fitted values for.
+        t_new : Optional[np.ndarray], optional
+            New time points to predict fitted values at (default: None).
+        size_factors : Optional[np.ndarray], optional
+            Size factors to use for prediction (default: None).
+        type : str, optional
+            The type of fitted values to return. Can be "link" or "response" (default: "response").
+
+        Returns
+        -------
+        np.ndarray
+            The predicted fitted values for the specified gene at the new time points.
+        """
         beta = self._get_beta(gene)
 
         if t_new is None:
@@ -252,6 +302,18 @@ class PseudotimeGAM:
 
     # -------- helpers --------
     def _get_counts_col(self, j: int) -> np.ndarray:
+        """Get raw counts for gene at index `j` (1D array for cells).
+
+        Parameters
+        ----------
+        j : int
+            The index of the gene to get raw counts for.
+
+        Returns
+        -------
+        np.ndarray
+            The raw counts for the specified gene.
+        """
         Xmat = (
             self.adata.layers[self._counts_layer]
             if self._counts_layer
@@ -264,6 +326,18 @@ class PseudotimeGAM:
         return np.asarray(Xmat[:, j]).ravel()
 
     def _get_beta(self, gene: Union[str, int]) -> np.ndarray:
+        """Get fitted coefficients for a specific gene.
+
+        Parameters
+        ----------
+        gene : Union[str, int]
+            The gene to get fitted coefficients for.
+
+        Returns
+        -------
+        np.ndarray
+            The fitted coefficients for the specified gene.
+        """
         j = gene if isinstance(gene, int) else int(np.where(self.adata.var_names == gene)[0][0])
         beta = self.adata.varm[self.key + "_coef"][j]
         if not np.isfinite(beta).all():
@@ -275,6 +349,18 @@ class PseudotimeGAM:
 
     # --- internal: one-row basis at a given t (sanitized like training t) ---
     def _basis_row(self, t: float) -> np.ndarray:
+        """Get a single row of the B-spline design matrix at time `t`.
+
+        Parameters
+        ----------
+        t : float
+            The time point to get the B-spline basis row for.
+
+        Returns
+        -------
+        np.ndarray
+            The B-spline basis row for the specified time point.
+        """
         x = np.asarray([t], dtype=float)
         finite = np.isfinite(x)
         if finite.sum() == 0:
@@ -297,6 +383,18 @@ class PseudotimeGAM:
 
     # --- internal: get beta and a covariance for Wald tests ---
     def _get_beta_cov(self, gene: Union[str, int]) -> tuple[np.ndarray, np.ndarray]:
+        """Get fitted coefficients and covariance for a specific gene.
+
+        Parameters
+        ----------
+        gene : Union[str, int]
+            The gene to get fitted coefficients and covariance for.
+
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray]
+            The fitted coefficients and covariance for the specified gene.
+        """
         beta = self._get_beta(gene)
         # 1) prefer stored covariance (IRLS with store_cov=True)
         cov_key = self.key + "_cov"
@@ -334,9 +432,32 @@ class PseudotimeGAM:
     # --------- public Wald tests ---------
 
     def contrast_test(self, gene: Union[str, int], c: np.ndarray) -> Dict[str, float]:
-        """
-        Generic Wald test for H0: c^T beta = 0.
+        """Generic Wald test for H0: c^T beta = 0.
+
         Returns (statistic, pvalue) with 1 df.
+
+        Parameters
+        ----------
+        gene : Union[str, int]
+            The gene to test the contrast for.
+        c : np.ndarray
+            Contrast vector (1D array) to test against the fitted coefficients.
+
+        Returns
+        -------
+        Dict[str, float]
+            A dictionary containing the Wald statistic and p-value for the contrast test.
+
+        Raises
+        ------
+        ValueError
+            If the contrast vector length does not match the number of coefficients,
+            or if the contrast variance is non-positive or non-finite.
+
+        Returns
+        -------
+        Dict[str, float]
+            A dictionary containing the Wald statistic and p-value for the contrast test.
         """
         beta, cov = self._get_beta_cov(gene)
         c = np.asarray(c, dtype=float).ravel()
@@ -352,9 +473,21 @@ class PseudotimeGAM:
     def association_test(
         self, gene: Union[str, int], exclude_intercept: bool = False
     ) -> Dict[str, float]:
-        """
-        H0: all smooth coefficients == 0.
+        """H0: all smooth coefficients == 0.
+
         If include_intercept=True and exclude_intercept=True, drops the first column.
+
+        Parameters
+        ----------
+        gene : Union[str, int]
+            The gene to test the association for.
+        exclude_intercept : bool, optional
+            Whether to exclude the intercept term from the test (default: False).
+
+        Returns
+        -------
+        Dict[str, float]
+            A dictionary containing the Wald statistic and p-value for the association test.
         """
         beta, cov = self._get_beta_cov(gene)
         if self.include_intercept and exclude_intercept:
@@ -382,9 +515,25 @@ class PseudotimeGAM:
         t_end: Optional[float] = None,
         quantile: float = 0.05,
     ) -> Dict[str, float]:
-        """
-        H0: f(t_end) - f(t_start) = 0 for the single trajectory.
+        """H0: f(t_end) - f(t_start) = 0 for the single trajectory.
+
         If times are omitted, uses empirical quantiles (q, 1-q).
+
+        Parameters
+        ----------
+        gene : Union[str, int]
+            The gene to test the start-end difference for.
+        t_start : Optional[float], optional
+            Start time for the test. If None, uses the quantile (default: None).
+        t_end : Optional[float], optional
+            End time for the test. If None, uses the 1-quantile (default: None).
+        quantile : float, optional
+            Quantile to use for start and end times if not provided (default: 0.05).
+
+        Returns
+        -------
+        Dict[str, float]
+            A dictionary containing the Wald statistic and p-value for the start-end test.
         """
         if t_start is None or t_end is None:
             # quantiles computed on the *filled* training times
@@ -411,7 +560,40 @@ def fit_gam(
     backend: str = "irls",
     **kwargs,
 ) -> PseudotimeGAM:
-    """Fit a PseudotimeGAM model to the given AnnData."""
+    """Fit a PseudotimeGAM model to the given AnnData.
+
+    Parameters
+    ----------
+    adata : ad.AnnData
+        The AnnData object containing the data.
+    counts_layer : Optional[str], optional
+        The layer in adata containing the raw counts (default: "counts").
+    pseudotime_key : str, optional
+        The key in adata.obs containing the pseudotime values (default: "dpt_pseudotime").
+    size_factors_key : str, optional
+        The key in adata.obs containing size factors (default: "size_factors").
+    df : int, optional
+        Degrees of freedom for the B-spline basis (default: 6).
+    degree : int, optional
+        Degree of the B-spline (default: 3).
+    lam : float, optional
+        Regularization parameter (default: 1.0).
+    include_intercept : bool, optional
+        Whether to include an intercept term in the model (default: False).
+    key : str, optional
+        Key prefix for storing results in adata.var (default: "nbgam1d").
+    nonfinite : str, optional
+        How to handle non-finite pseudotime values: "error", "mask", or "median" (default: "error").
+    backend : str, optional
+        The backend to use for fitting. Currently only "irls" is supported (default: "irls").
+    **kwargs : Any
+        Additional keyword arguments for the backend.
+
+    Returns
+    -------
+    PseudotimeGAM
+        The fitted PseudotimeGAM model.
+    """
     model = PseudotimeGAM(
         adata=adata,
         counts_layer=counts_layer,

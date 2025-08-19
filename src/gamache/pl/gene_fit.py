@@ -1,3 +1,5 @@
+"""Plotting functionality to visualize gene expression over pseudotime."""
+
 from typing import Callable, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
@@ -26,18 +28,50 @@ def plot_gene_fit(
     title: Optional[str] = None,
     ax: Optional[plt.Axes] = None,
 ) -> Tuple[plt.Figure, plt.Axes]:
-    """
-    Plot observed counts vs. pseudotime with fitted curve(s) for a single gene.
+    """Plot observed counts vs. pseudotime with fitted curve(s) for a single gene.
 
-    - Observed points (optionally downsampled/jittered)
-    - Fitted values at observed t
-    - Optional dense-grid smoother via `model.predict`
-    - Optional binned mean with simple CI on the transformed scale
+    Parameters
+    ----------
+    model : PseudotimeGAM-like object
+        Must have attributes:
+        - .adata: AnnData object with gene expression data
+        - .t_filled: Pseudotime values for each cell
+        - .predict(gene, t_new): Predict expression for `gene` at new pseudotime values
+        - .fitted_values(gene): Fitted expression values for `gene` at observed pseudotime
+        - ._get_counts_col(j): Get raw counts for gene at index `j` (1D array for cells)
+    gene : str
+        The gene name to plot.
+    transform : Callable, optional
+        Function to transform the raw counts (default: log1p).
+    smoother : bool, optional
+        Whether to draw a smooth curve using model.predict on a dense grid (default: True).
+    smooth_points : int, optional
+        Number of points for the smooth curve (default: 200).
+    show_binned : bool, optional
+        Whether to show a binned mean with confidence intervals (default: True).
+    bins : int, optional
+        Number of bins for the binned mean (default: 30).
+    ci : float, optional
+        Confidence level for the binned mean (default: 0.95).
+    scatter_alpha : float, optional
+        Transparency of the scatter points (default: 0.35).
+    scatter_size : float, optional
+        Size of the scatter points (default: 8.0).
+    jitter : float, optional
+        Amount of jitter to add to the pseudotime values (default: 0.0).
+    max_points : Optional[int], optional
+        Maximum number of points to show in the scatter plot. If None, show all points (default: None).
+    grid : bool, optional
+        Whether to show a grid on the plot (default: True).
+    title : Optional[str], optional
+        Title for the plot. If None, defaults to "Fit for {gene}" (default: None).
+    ax : Optional[plt.Axes], optional
+        If provided, plot on this Axes object instead of creating a new one (default: None).
 
-    Notes
-    -----
-    * By default applies log1p to both observed and fitted so scales match.
-    * The function avoids hard-coded colors to play nicely with your mpl style/theme.
+    Returns
+    -------
+    Tuple[plt.Figure, plt.Axes]
+        The Figure and Axes objects containing the plot.
     """
     # --- resolve gene index
     var_names = np.asarray(model.adata.var_names)

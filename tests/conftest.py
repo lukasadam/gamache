@@ -1,3 +1,5 @@
+"""Fixtures for testing."""
+
 import anndata as ad
 import numpy as np
 import pytest
@@ -5,7 +7,19 @@ import scanpy as sc
 
 
 def _ensure_pseudotime(adata, t, root_idx, n_dcs=10):
-    """Compute DPT pseudotime across Scanpy versions."""
+    """Compute DPT pseudotime across Scanpy versions.
+
+    Parameters
+    ----------
+    adata : AnnData
+        The AnnData object to compute pseudotime for.
+    t : np.ndarray
+        The pseudotime values to use.
+    root_idx : int
+        The index of the root cell in `adata.obs_names`.
+    n_dcs : int, optional
+        Number of diffusion components to compute (default: 10).
+    """
     root_name = adata.obs_names[root_idx]
     adata.obs["__is_root__"] = adata.obs_names == root_name
 
@@ -39,13 +53,7 @@ def _ensure_pseudotime(adata, t, root_idx, n_dcs=10):
 
 @pytest.fixture
 def adata_small_pt():
-    """
-    Small static AnnData with:
-      - layer 'counts' (int NB counts)
-      - normalized/log1p X
-      - inferred pseudotime in .obs['dpt_pseudotime']
-      - adata.raw = adata.copy()
-    """
+    """Create a small AnnData object with pseudotime and synthetic gene expression data."""
     rng = np.random.default_rng(42)
     n_cells, n_genes = 300, 60
 

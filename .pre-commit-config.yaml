@@ -13,8 +13,14 @@ repos:
     rev: v0.5.7
     hooks:
       - id: ruff
-        args: [--fix]
+        args: ["--fix"]
       - id: ruff-format
+
+  - repo: https://github.com/PyCQA/pydocstyle
+    rev: 6.3.0
+    hooks:
+      - id: pydocstyle
+        args: ["--convention=google"]
 
   - repo: https://github.com/psf/black
     rev: 24.8.0

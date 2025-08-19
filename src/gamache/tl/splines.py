@@ -1,3 +1,5 @@
+"""B-spline basis and penalty matrix for Generalized Additive Models (GAMs)."""
+
 from __future__ import annotations
 
 from typing import Tuple
