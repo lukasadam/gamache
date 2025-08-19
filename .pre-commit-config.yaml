@@ -13,8 +13,14 @@ repos:
     rev: v0.5.7
     hooks:
       - id: ruff
-        args: [--fix]
+        args: ["--fix"]
       - id: ruff-format
+
+  - repo: https://github.com/PyCQA/pydocstyle
+    rev: 6.3.0
+    hooks:
+      - id: pydocstyle
+        args: ["--convention=google"]
 
   - repo: https://github.com/psf/black
     rev: 24.8.0
@@ -39,12 +45,10 @@ repos:
     rev: 1.9.0
     hooks:
       - id: nbqa-ruff
-        args: [--extend-select=I]
-        additional_dependencies: [ruff==0.5.7]
+        args: ["--fix", "--select=I"]
+        additional_dependencies: ["ruff==0.5.*"]
       - id: nbqa-black
         additional_dependencies: [black==24.8.0]
-      - id: nbqa-isort
-        additional_dependencies: [isort==5.13.2]
 
   - repo: https://github.com/kynan/nbstripout
     rev: 0.7.1

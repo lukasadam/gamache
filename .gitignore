@@ -29,3 +29,7 @@ uv.lock
 
 # ignore .egg-info directories
 *.egg-info/
+
+# Ignore data files
+*.h5
+*.h5ad

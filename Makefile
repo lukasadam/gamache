@@ -12,7 +12,6 @@ help:
 	@echo "  make docs           # build docs (if mkdocs present)"
 	@echo "  make docs-serve     # serve docs locally"
 	@echo "  make clean          # remove caches and build artifacts"
-	@echo "  make config         # install config dependencies"
 	@echo "  make dataio         # install dataio dependencies"
 
 bootstrap:
@@ -44,9 +43,6 @@ precommit:
 	uv pip install pre-commit
 	uv run pre-commit install
 	uv run pre-commit run --all-files
-
-config:
-	uv pip install -e '.[config]'
 
 dataio:
 	uv pip install -e '.[dataio]'

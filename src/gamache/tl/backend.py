@@ -1,3 +1,5 @@
+"""Backend for fitting Negative Binomial 2 (NB2) Generalized Additive Models (GAMs) using Iteratively Reweighted Least Squares (IRLS)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -15,9 +17,23 @@ from .irls import solve_penalized_wls
 
 def nb2_logpmf(y: np.ndarray, mu: np.ndarray, alpha: float) -> np.ndarray:
     """Elementwise NB2 log pmf (ignoring constants not depending on mu/alpha).
-    Var(Y)=mu + alpha*mu^2, alpha>0.
-    """
 
+    Var(Y)=mu + alpha*mu^2, alpha>0.
+
+    Parameters
+    ----------
+    y : (n,) array-like, non-negative integers (counts)
+        Response variable.
+    mu : (n,) array-like, positive floats (mean)
+        Mean of the distribution.
+    alpha : float, positive (dispersion parameter)
+        Dispersion parameter of the NB2 distribution.
+
+    Returns
+    -------
+    logpmf : (n,) array-like, log pmf values
+        Log pmf values for the NB2 distribution.
+    """
     r = 1.0 / alpha
     return (
         gammaln(y + r)
@@ -29,15 +45,57 @@ def nb2_logpmf(y: np.ndarray, mu: np.ndarray, alpha: float) -> np.ndarray:
 
 
 def mu_eta(eta: np.ndarray) -> np.ndarray:
+    """Inverse link function for NB2 with log link: mu = exp(eta).
+
+    Parameters
+    ----------
+    eta : (n,) array-like, linear predictor (log scale)
+        Linear predictor values.
+
+    Returns
+    -------
+    mu : (n,) array-like, positive floats (mean)
+        Mean of the NB2 distribution, computed as exp(eta).
+    """
     return np.exp(eta)
 
 
 def irls_weights(mu: np.ndarray, alpha: float) -> np.ndarray:
+    """IRLS weights for NB2 with log link: w_i = (dmu/deta)^2 / Var(Y).
+
+    Parameters
+    ----------
+    mu : (n,) array-like, positive floats (mean)
+        Mean of the NB2 distribution.
+    alpha : float, positive (dispersion parameter)
+        Dispersion parameter of the NB2 distribution.
+
+    Returns
+    -------
+    w : (n,) array-like, positive floats (weights)
+        IRLS weights for the NB2 distribution.
+    """
     # w_i = (dmu/deta)^2 / Var(Y) with log link: (mu^2) / (mu + alpha mu^2)
     return (mu * mu) / (mu + alpha * mu * mu + 1e-12)
 
 
 def pseudo_response(eta: np.ndarray, y: np.ndarray, mu: np.ndarray) -> np.ndarray:
+    """Compute pseudo-response z = eta + (y - mu) / dmu/deta.
+
+    Parameters
+    ----------
+    eta : (n,) array-like, linear predictor (log scale)
+        Linear predictor values.
+    y : (n,) array-like, non-negative integers (counts)
+        Response variable.
+    mu : (n,) array-like, positive floats (mean)
+        Mean of the NB2 distribution.
+
+    Returns
+    -------
+    z : (n,) array-like, pseudo-response values
+        Pseudo-response values computed as z = eta + (y - mu) / dmu/deta.
+    """
     # z = eta + (y - mu) / dmu/deta; with log link dmu/deta = mu
     return eta + (y - mu) / (mu + 1e-12)
 
@@ -45,7 +103,22 @@ def pseudo_response(eta: np.ndarray, y: np.ndarray, mu: np.ndarray) -> np.ndarra
 def estimate_alpha_pearson(
     y: np.ndarray, mu: np.ndarray, weights: Optional[np.ndarray] = None
 ) -> float:
-    """Method-of-moments dispersion estimate from Pearson residuals; clipped to small positive."""
+    """Method-of-moments dispersion estimate from Pearson residuals; clipped to small positive.
+
+    Parameters
+    ----------
+    y : (n,) array-like, non-negative integers (counts)
+        Response variable.
+    mu : (n,) array-like, positive floats (mean)
+        Mean of the distribution.
+    weights : (n,) array-like, optional, positive floats (weights)
+        Observation weights (optional, default is None, which uses equal weights).
+
+    Returns
+    -------
+    alpha : float, positive (dispersion parameter)
+        Estimated dispersion parameter, clipped to a small positive value.
+    """
     if weights is None:
         weights = np.ones_like(y)
     num = np.sum(weights * (y - mu) ** 2) - np.sum(weights * mu)
@@ -60,7 +133,20 @@ def estimate_alpha_pearson(
 
 
 def penalty_matrix(k: int, order: int = 2) -> np.ndarray:
-    """RW(order) difference penalty: K = D^T D, with D the finite-difference matrix."""
+    """RW(order) difference penalty: K = D^T D, with D the finite-difference matrix.
+
+    Parameters
+    ----------
+    k : int
+        Number of basis functions (columns)
+    order : int, optional
+        Order of the penalty (default is 2 for curvature)
+
+    Returns
+    -------
+    K : (k, k) array-like
+        Penalty matrix of shape (k, k)
+    """
     if order < 1:
         return np.zeros((k, k), dtype=float)
     # Build D (k - order) x k
@@ -71,7 +157,18 @@ def penalty_matrix(k: int, order: int = 2) -> np.ndarray:
 
 
 def block_diag(mats: Sequence[np.ndarray]) -> np.ndarray:
-    """Lightweight block diagonal assembly."""
+    """Lightweight block diagonal assembly.
+
+    Parameters
+    ----------
+    mats : Sequence[np.ndarray]
+        List of matrices to concatenate into a block diagonal matrix.
+
+    Returns
+    -------
+    out : np.ndarray
+        Block diagonal matrix containing the input matrices.
+    """
     p = int(sum(m.shape[0] for m in mats))
     out = np.zeros((p, p), dtype=float)
     c = 0
@@ -85,7 +182,20 @@ def block_diag(mats: Sequence[np.ndarray]) -> np.ndarray:
 def apply_lineage_weights(
     X_blocks: Sequence[np.ndarray], lineage_weights: Optional[np.ndarray]
 ) -> List[np.ndarray]:
-    """Scale columns in block l by sqrt(w_{i,l}) row-wise (classic trick)."""
+    """Scale columns in block l by sqrt(w_{i,l}) row-wise (classic trick).
+
+    Parameters
+    ----------
+    X_blocks : Sequence[np.ndarray]
+        List of design matrices for each lineage block.
+    lineage_weights : Optional[np.ndarray]
+        (n, L) array-like of lineage weights, where L is the number of lineages.
+
+    Returns
+    -------
+    List[np.ndarray]
+        List of scaled design matrices, where each matrix is scaled by the square root of the lineage weights.
+    """
     if lineage_weights is None:
         return [np.asarray(X, float) for X in X_blocks]
     Xw = []
@@ -101,7 +211,26 @@ def build_block_design(
     lineage_weights: Optional[np.ndarray] = None,
     penalty_order: int = 2,
 ) -> Tuple[np.ndarray, np.ndarray, List[slice]]:
-    """Concatenate a list of design blocks into a single X and build block-diagonal penalty S."""
+    """Concatenate a list of design blocks into a single X and build block-diagonal penalty S.
+
+    Parameters
+    ----------
+    X_blocks : Sequence[np.ndarray]
+        List of design matrices for each lineage block.
+    lambdas : Sequence[float]
+        List of penalty weights for each block.
+    lineage_weights : Optional[np.ndarray]
+        (n, L) array-like of lineage weights, where L is the number of lineages.
+    penalty_order : int, optional
+        Order of the penalty (default is 2 for curvature).
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, List[slice]]
+        X : (n, p) concatenated design matrix,
+        S : (p, p) block-diagonal penalty matrix,
+        slices : List of slices for each block in X.
+    """
     Xw_blocks = apply_lineage_weights(X_blocks, lineage_weights)
     slices: List[slice] = []
     cols = 0
@@ -124,6 +253,8 @@ def build_block_design(
 
 @dataclass
 class FitResult:
+    """Unified fit result for NB2-GAM."""
+
     beta: np.ndarray  # (p,)
     alpha: float  # NB2 dispersion
     edf: float  # effective degrees of freedom
@@ -153,6 +284,26 @@ class IRLSBackend:
         offset: np.ndarray,
         obs_weights: Optional[np.ndarray] = None,
     ) -> FitResult:
+        """Fit a penalized weighted least squares model using IRLS.
+
+        Parameters
+        ----------
+        y : np.ndarray
+            Response variable.
+        X : np.ndarray
+            Design matrix.
+        S : np.ndarray
+            Penalty matrix.
+        offset : np.ndarray
+            Offset vector.
+        obs_weights : Optional[np.ndarray], optional
+            Observation weights.
+
+        Returns
+        -------
+        FitResult
+            Fitted model parameters and diagnostics.
+        """
         n, p = X.shape
         y = y.astype(float)
         offset = offset.astype(float)
