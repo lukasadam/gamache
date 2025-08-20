@@ -192,3 +192,114 @@ def test_fit_gam_convenience(adata_small_pt):
     assert adata_small_pt.varm["nbgam_wrap_coef"].shape == (adata_small_pt.n_vars, p)
     assert "nbgam_wrap_alpha" in adata_small_pt.var
     assert "nbgam_wrap_edf" in adata_small_pt.var
+
+
+# tests/test_fit_core.py
+
+
+def test_fit_all_genes_no_cov_writes_expected_shapes_and_no_cov_key(adata_small_pt):
+    key = "nbgam_fit_all"
+    m = PseudotimeGAM(
+        adata_small_pt,
+        counts_layer="counts",
+        pseudotime_key="dpt_pseudotime",
+        size_factors_key="size_factors",
+        key=key,
+        backend="irls",
+        nonfinite="error",
+    )
+    m.fit(store_cov=False)
+
+    p = m.p
+    # coef/alpha/edf exist with correct shapes
+    coef = adata_small_pt.varm[f"{key}_coef"]
+    alpha = adata_small_pt.var[f"{key}_alpha"].to_numpy()
+    edf = adata_small_pt.var[f"{key}_edf"].to_numpy()
+
+    assert coef.shape == (adata_small_pt.n_vars, p)
+    assert alpha.shape == (adata_small_pt.n_vars,)
+    assert edf.shape == (adata_small_pt.n_vars,)
+    # all genes were fit → finite everywhere
+    assert np.isfinite(coef).all()
+    assert np.isfinite(alpha).all()
+    assert np.isfinite(edf).all()
+    # no covariance stored
+    assert f"{key}_cov" not in adata_small_pt.varm
+
+
+def test_fit_with_mixed_gene_indexing_and_bad_name_raises(adata_small_pt):
+    key = "nbgam_fit_idx_names"
+    m = PseudotimeGAM(adata_small_pt, key=key, backend="irls", nonfinite="error")
+
+    genes = [0, "g1", adata_small_pt.var_names[2]]
+    m.fit(genes=genes, store_cov=False)
+
+    coef = adata_small_pt.varm[f"{key}_coef"]
+    alpha = adata_small_pt.var[f"{key}_alpha"].to_numpy()
+    edf = adata_small_pt.var[f"{key}_edf"].to_numpy()
+
+    # requested genes should be finite, others NaN
+    req = np.array([0, 1, 2], dtype=int)
+    not_req = np.setdiff1d(np.arange(adata_small_pt.n_vars), req)
+    assert np.isfinite(coef[req]).all()
+    assert np.isfinite(alpha[req]).all()
+    assert np.isfinite(edf[req]).all()
+    assert np.isnan(coef[not_req]).all()
+    assert np.isnan(alpha[not_req]).all()
+    assert np.isnan(edf[not_req]).all()
+
+    # a missing gene name should raise (IndexError from np.where(...)[0][0])
+    with pytest.raises(IndexError):
+        m.fit(genes=["__does_not_exist__"])
+
+
+def test_fit_invalid_backend_raises(adata_small_pt):
+    key = "nbgam_bad_backend"
+    m = PseudotimeGAM(adata_small_pt, key=key, backend="not_irls", nonfinite="error")
+    with pytest.raises(ValueError, match="backend must be 'irls'"):
+        m.fit(genes=[0])
+
+
+def test_fit_writes_edf_within_bounds_and_diagnostics_column(adata_small_pt):
+    key = "nbgam_bounds_diag"
+    m = PseudotimeGAM(adata_small_pt, key=key, backend="irls", nonfinite="error")
+    genes = [0, 1, 2, 3]
+    m.fit(genes=genes, store_cov=False)
+
+    edf = adata_small_pt.var[f"{key}_edf"].to_numpy()
+    diag = adata_small_pt.var[f"{key}_diagnostics"].to_numpy()
+
+    # EDF should lie in [0, p] for fitted genes
+    for g in genes:
+        assert 0.0 <= edf[g] <= m.p
+        assert np.isfinite(diag[g])
+    # Unfitted genes retain NaNs
+    not_genes = np.setdiff1d(np.arange(adata_small_pt.n_vars), genes)
+    assert np.isnan(edf[not_genes]).all()
+    assert np.isnan(diag[not_genes]).all()
+
+
+def test_fit_store_cov_true_writes_symmetric_posdef_cov(adata_small_pt):
+    key = "nbgam_cov_check"
+    m = PseudotimeGAM(adata_small_pt, key=key, backend="irls", nonfinite="error")
+    m.fit(genes=[0], store_cov=True)
+
+    cov = adata_small_pt.varm[f"{key}_cov"][0]
+    # symmetric
+    assert_allclose(cov, cov.T, rtol=0, atol=1e-8)
+    # positive definite (numerically)
+    # Add tiny ridge before eigvals to avoid numerical jitter on borderline cases
+    eigvals = np.linalg.eigvalsh(cov + 1e-12 * np.eye(cov.shape[0]))
+    assert np.all(eigvals > 0.0)
+
+
+def test_fit_does_not_modify_design_or_penalty_shapes(adata_small_pt):
+    key = "nbgam_shapes_stable"
+    m = PseudotimeGAM(adata_small_pt, key=key, backend="irls", nonfinite="error")
+    X0_shape, S0_shape, p0 = m.X.shape, m.S.shape, m.p
+    m.fit(genes=[0, 1, 2])
+
+    # shapes remain consistent after fitting
+    assert m.X.shape == X0_shape
+    assert m.S.shape == S0_shape
+    assert m.p == p0
