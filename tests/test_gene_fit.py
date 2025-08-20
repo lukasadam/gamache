@@ -1,18 +1,17 @@
-# tests/test_plot_gene_fit.py
+# tests/test_gene_fit_scanpy.py
 import matplotlib
 
 matplotlib.use("Agg")  # headless backend for CI
 
 import numpy as np
 import pytest
-from numpy.testing import assert_allclose
 
 from gamache.pl.gene_fit import plot_gene_fit
 from gamache.tl.fit import PseudotimeGAM
 
 
-def _fit_one_gene_model(adata, gene_name="g0", key="nbgam_plot"):
-    """Build & fit a model for a single gene to keep tests fast."""
+def _fit_one_gene_model(adata, gene_name="g0", key="nbgam_scanpy_plot"):
+    """Fit a model for a single gene (fast, minimal)."""
     m = PseudotimeGAM(
         adata=adata,
         counts_layer="counts",
@@ -22,93 +21,75 @@ def _fit_one_gene_model(adata, gene_name="g0", key="nbgam_plot"):
         backend="irls",
         nonfinite="error",
     )
-    # Fit the target gene so .fitted_values() works
     idx = int(np.where(adata.var_names == gene_name)[0][0])
     m.fit(genes=[idx])
     return m
 
 
-def test_plot_basic_elements(adata_small_pt):
-    model = _fit_one_gene_model(adata_small_pt, "g0", key="nbgam_plot_basic")
+def test_returns_fig_and_ax(adata_small_pt):
+    model = _fit_one_gene_model(adata_small_pt, "g0")
+    fig, ax = plot_gene_fit(model, "g0")
+    from matplotlib.axes import Axes
+    from matplotlib.figure import Figure
 
-    fig, ax = plot_gene_fit(model, "g0")  # defaults: smoother=True, show_binned=True
+    assert isinstance(fig, Figure)
+    assert isinstance(ax, Axes)
+    fig.clf()
 
-    # Scatter (observed)
-    assert len(ax.collections) >= 1
 
-    # Lines: per-cell fitted, smooth grid, and (likely) binned mean
+def test_scatter_and_smooth_line_present(adata_small_pt):
+    model = _fit_one_gene_model(adata_small_pt, "g0")
+    fig, ax = plot_gene_fit(model, "g0")
+    # scatter from scanpy
+    assert any(isinstance(coll, matplotlib.collections.PathCollection) for coll in ax.collections)
+    # smooth line
     labels = [ln.get_label() for ln in ax.get_lines()]
-    assert "fitted (per-cell)" in labels
-    assert "smooth (grid)" in labels
-    # binned mean may skip if bins are empty; allow either presence or absence
-    assert any(l.startswith("binned mean (") for l in labels) or True
-
-    # y-axis lower bound at 0
-    y0, _ = ax.get_ylim()
-    assert y0 == 0.0
-
+    assert "smooth" in labels
     fig.clf()
 
 
-def test_no_smoother_no_binned_custom_transform_on_given_ax(adata_small_pt):
-    import matplotlib.pyplot as plt
+def test_color_forwarded(adata_small_pt):
+    model = _fit_one_gene_model(adata_small_pt, "g0")
+    # Use another gene as coloring variable
+    fig, ax = plot_gene_fit(model, "g0", color="g1")
+    # Should still produce scatter + smooth
+    assert len(ax.collections) >= 1
+    assert any(ln.get_label() == "smooth" for ln in ax.get_lines())
+    fig.clf()
 
-    model = _fit_one_gene_model(adata_small_pt, "g0", key="nbgam_plot_minimal")
 
-    fig, ax = plt.subplots()
-    fig2, ax2 = plot_gene_fit(
-        model,
-        "g0",
-        smoother=False,
-        show_binned=False,
-        transform=np.log1p,
-        ax=ax,
-        title="custom",
+def test_jitter_changes_pseudotime(adata_small_pt):
+    model = _fit_one_gene_model(adata_small_pt, "g0")
+    t_before = model.t_filled.copy()
+    fig, ax = plot_gene_fit(model, "g0", jitter=0.05)
+    # Temporary obs columns must be gone
+    assert not any(
+        col.endswith("_tmp_expr") or col == "_tmp_pseudotime" for col in model.adata.obs.columns
     )
-
-    # Returned figure/axes are the ones we passed
-    assert fig2 is fig and ax2 is ax
-
-    # Only the per-cell fitted line should be drawn
-    lines = ax.get_lines()
-    assert len(lines) == 1
-    assert lines[0].get_label() == "fitted (per-cell)"
-
-    # Check plotted data equals transform(fitted) sorted by t
-    eta = model.fitted_values("g0", type="link")
-    mu = np.exp(eta)
-    yhat = np.log1p(mu)
-    order = np.argsort(model.t_filled)
-
-    assert_allclose(lines[0].get_xdata(), model.t_filled[order])
-    assert_allclose(lines[0].get_ydata(), yhat[order], rtol=1e-6, atol=1e-8)
-
+    # x data of scatter ≠ original pseudotime (due to jitter)
+    scatter_x = ax.collections[0].get_offsets()[:, 0]
+    assert not np.allclose(scatter_x, t_before, rtol=1e-6)
     fig.clf()
 
 
-def test_downsample_and_jitter_changes_scatter_count(adata_small_pt):
-    model = _fit_one_gene_model(adata_small_pt, "g0", key="nbgam_plot_downsample")
-
-    fig, ax = plot_gene_fit(model, "g0", max_points=50, jitter=0.01)
-    # First PathCollection is the observed scatter; offsets rows == plotted points
-    n_pts = ax.collections[0].get_offsets().shape[0]
-    assert n_pts == 50
+def test_title_and_labels(adata_small_pt):
+    model = _fit_one_gene_model(adata_small_pt, "g0")
+    fig, ax = plot_gene_fit(model, "g0", title="custom title")
+    assert ax.get_title() == "custom title"
+    assert ax.get_xlabel() == "Pseudotime"
+    assert ax.get_ylabel() == "Expression g0"
     fig.clf()
 
 
-def test_bad_gene_raises(adata_small_pt):
-    # Model doesn't need to be fit if gene name is invalid — error is raised early
-    model = _fit_one_gene_model(adata_small_pt, "g0", key="nbgam_plot_bad")
+def test_invalid_gene_raises(adata_small_pt):
+    model = _fit_one_gene_model(adata_small_pt, "g0")
     with pytest.raises(ValueError, match="not found"):
         plot_gene_fit(model, "no_such_gene")
 
 
-def test_length_mismatch_raises(adata_small_pt, monkeypatch):
-    model = _fit_one_gene_model(adata_small_pt, "g0", key="nbgam_plot_mismatch")
-
-    # Force t length != y length (fitted/observed remain full length)
-    t_orig = model.t_filled
-    monkeypatch.setattr(model, "t_filled", t_orig[:-1], raising=False)
-
-    with pytest.raises(ValueError, match="Shape mismatch"):
-        plot_gene_fit(model, "g0")
+def test_cleanup_of_temp_obs_keys(adata_small_pt):
+    model = _fit_one_gene_model(adata_small_pt, "g0")
+    fig, ax = plot_gene_fit(model, "g0")
+    # tmp keys should have been removed
+    assert all(not k.startswith("_g0_tmp") for k in model.adata.obs.columns)
+    fig.clf()

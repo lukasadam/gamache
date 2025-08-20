@@ -1,202 +1,109 @@
 """Plotting functionality to visualize gene expression over pseudotime."""
 
-from typing import Callable, Optional, Tuple, Union
+from typing import Callable, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy
+import scanpy as sc
 import scipy.sparse as sp
-
-ArrayLike = Union[np.ndarray, "scipy.sparse.spmatrix"]
 
 
 def plot_gene_fit(
-    model,  # PseudotimeGAM-like: .adata, .t_filled, .predict(gene, t_new), .fitted_values(gene), ._get_counts_col(j)
+    model,
     gene: str,
     *,
     transform: Callable[[np.ndarray], np.ndarray] = lambda x: np.log1p(x),
-    smoother: bool = True,  # draw dense-grid smooth curve via model.predict
     smooth_points: int = 200,
-    show_binned: bool = True,  # draw a binned mean with CI (on transformed scale)
-    bins: int = 30,
-    ci: float = 0.95,
-    scatter_alpha: float = 0.35,
-    scatter_size: float = 8.0,
-    jitter: float = 0.0,  # add small jitter to t (e.g., 0.002) to reduce overplotting
-    max_points: Optional[int] = None,  # downsample scatter for huge n
+    scatter_alpha: float = 1.0,
+    scatter_size: float = 80.0,
+    jitter: float = 0.0,
     grid: bool = True,
     title: Optional[str] = None,
-    ax: Optional[plt.Axes] = None,
+    color: Optional[str] = None,  # forward to sc.pl.scatter
+    **scatter_kwargs,
 ) -> Tuple[plt.Figure, plt.Axes]:
-    """Plot observed counts vs. pseudotime with fitted curve(s) for a single gene.
+    """Plot the fitted gene expression over pseudotime.
 
     Parameters
     ----------
-    model : PseudotimeGAM-like object
-        Must have attributes:
-        - .adata: AnnData object with gene expression data
-        - .t_filled: Pseudotime values for each cell
-        - .predict(gene, t_new): Predict expression for `gene` at new pseudotime values
-        - .fitted_values(gene): Fitted expression values for `gene` at observed pseudotime
-        - ._get_counts_col(j): Get raw counts for gene at index `j` (1D array for cells)
+    model : object
+        A fitted model with a `predict` method and `adata` attribute.
     gene : str
-        The gene name to plot.
+        The gene for which to plot the fit.
     transform : Callable, optional
-        Function to transform the raw counts (default: log1p).
-    smoother : bool, optional
-        Whether to draw a smooth curve using model.predict on a dense grid (default: True).
+        Function to transform the response values, by default `np.log1p`.
     smooth_points : int, optional
-        Number of points for the smooth curve (default: 200).
-    show_binned : bool, optional
-        Whether to show a binned mean with confidence intervals (default: True).
-    bins : int, optional
-        Number of bins for the binned mean (default: 30).
-    ci : float, optional
-        Confidence level for the binned mean (default: 0.95).
+        Number of points in the dense grid for smoothing, by default 200.
     scatter_alpha : float, optional
-        Transparency of the scatter points (default: 0.35).
+        The alpha transparency for the scatter points, by default 1.0.
     scatter_size : float, optional
-        Size of the scatter points (default: 8.0).
+        The size of the scatter points, by default 80.0.
     jitter : float, optional
-        Amount of jitter to add to the pseudotime values (default: 0.0).
-    max_points : Optional[int], optional
-        Maximum number of points to show in the scatter plot. If None, show all points (default: None).
+        The amount of jitter to add to the pseudotime values, by default 0.0.
     grid : bool, optional
-        Whether to show a grid on the plot (default: True).
+        Whether to show a grid in the plot, by default True.
     title : Optional[str], optional
-        Title for the plot. If None, defaults to "Fit for {gene}" (default: None).
-    ax : Optional[plt.Axes], optional
-        If provided, plot on this Axes object instead of creating a new one (default: None).
-
-    Returns
-    -------
-    Tuple[plt.Figure, plt.Axes]
-        The Figure and Axes objects containing the plot.
+        The title of the plot, by default None.
+    color : Optional[str], optional
+        The color for the scatter points, by default None.
+    scatter_kwargs : dict, optional
+        Additional keyword arguments to pass to `sc.pl.scatter`.
     """
-    # --- resolve gene index
+    # --- check gene
     var_names = np.asarray(model.adata.var_names)
-    matches = np.where(var_names == gene)[0]
-    if matches.size == 0:
+    if gene not in var_names:
         raise ValueError(f"Gene '{gene}' not found in adata.var_names.")
-    j = int(matches[0])
+    j = int(np.where(var_names == gene)[0][0])
 
-    # --- get data
-    y_raw: ArrayLike = model._get_counts_col(j)  # 1D counts for cells
-    # convert sparse -> dense if needed
+    # --- get raw arrays
+    y_raw = model._get_counts_col(j)
     if sp.issparse(y_raw):
         y_raw = y_raw.A.ravel()
-
     y_raw = np.asarray(y_raw).ravel()
-
     t = np.asarray(model.t_filled).ravel()
-    if t.shape[0] != y_raw.shape[0]:
-        raise ValueError(f"Shape mismatch: t has {t.shape[0]} cells, y has {y_raw.shape[0]}.")
 
-    # --- fitted at observed t
-    yhat_raw = np.asarray(model.fitted_values(gene)).ravel()
-    if yhat_raw.shape[0] != y_raw.shape[0]:
-        raise ValueError("model.fitted_values(gene) must return per-cell fitted values.")
-
-    y = transform(y_raw)
-    yhat = transform(yhat_raw)
-
-    # --- order for lines
-    order = np.argsort(t)
-    t_sorted = t[order]
-    yhat_sorted = yhat[order]
-
-    # --- optional downsampling
-    if max_points is not None and y.size > max_points:
-        rng = np.random.default_rng(0)
-        keep = np.sort(rng.choice(y.size, size=max_points, replace=False))
-        t_scatter = t[keep]
-        y_scatter = y[keep]
-    else:
-        t_scatter = t
-        y_scatter = y
-
-    # --- jitter (helps when many identical t)
     if jitter and jitter > 0:
         rng = np.random.default_rng(0)
-        t_scatter = t_scatter + rng.normal(0.0, jitter, size=t_scatter.shape)
+        t = t + rng.normal(0.0, jitter, size=t.shape)
 
-    # --- prepare axes
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(7.0, 4.5))
-    else:
-        fig = ax.figure
+    y = transform(y_raw)
 
-    # --- draw
-    # scatter of observed
-    ax.scatter(t_scatter, y_scatter, s=scatter_size, alpha=scatter_alpha, label="observed")
+    # --- temporarily add obs columns for plotting
+    tmp_key = f"_{gene}_tmp_expr"
+    tmp_pt = "_tmp_pseudotime"
+    model.adata.obs[tmp_key] = y
+    model.adata.obs[tmp_pt] = t
 
-    # fitted line at observed t (sorted)
-    ax.plot(t_sorted, yhat_sorted, linewidth=2.0, label="fitted (per-cell)")
+    # --- scatter via scanpy
+    ax = sc.pl.scatter(
+        model.adata,
+        x=tmp_pt,
+        y=tmp_key,
+        color=color,
+        alpha=scatter_alpha,
+        size=scatter_size,
+        show=False,
+        **scatter_kwargs,
+    )
+    fig = ax.figure
 
-    # optional dense-grid smooth
-    if smoother:
-        t_grid = np.linspace(np.nanmin(t), np.nanmax(t), int(smooth_points))
-        y_grid_raw = np.asarray(model.predict(gene, t_new=t_grid)).ravel()
-        y_grid = transform(y_grid_raw)
-        ax.plot(t_grid, y_grid, linestyle="--", linewidth=2.0, label="smooth (grid)")
+    # --- smooth prediction
+    t_grid = np.linspace(np.nanmin(t), np.nanmax(t), int(smooth_points))
+    y_grid_pred = np.asarray(model.predict(gene, t_new=t_grid)).ravel()
+    y_grid = transform(y_grid_pred)
+    ax.plot(t_grid, y_grid, color="black", lw=2, label="smooth", linestyle="dashed")
 
-    # optional binned mean with simple CI (on transformed scale)
-    if show_binned and bins > 1:
-        # digitize and compute mean + CI within each bin
-        edges = np.linspace(np.nanmin(t), np.nanmax(t), bins + 1)
-        centers = 0.5 * (edges[:-1] + edges[1:])
-        means = np.full(bins, np.nan)
-        lowers = np.full(bins, np.nan)
-        uppers = np.full(bins, np.nan)
-
-        from math import sqrt
-
-        from scipy.stats import t as t_dist  # only used if available
-
-        for i in range(bins):
-            mask = (t >= edges[i]) & (t < edges[i + 1])
-            yy = y[mask]
-            if yy.size > 1:
-                m = float(np.nanmean(yy))
-                s = float(np.nanstd(yy, ddof=1))
-                n = int(np.sum(~np.isnan(yy)))
-                means[i] = m
-                if n > 1:
-                    # t-based CI on transformed scale
-                    try:
-                        q = float(t_dist.ppf(0.5 + ci / 2.0, df=n - 1))
-                    except Exception:
-                        q = 1.96  # fallback ~95%
-                    half = q * s / sqrt(n)
-                    lowers[i] = m - half
-                    uppers[i] = m + half
-
-        # plot binned mean line
-        valid = ~np.isnan(means)
-        if np.any(valid):
-            ax.plot(
-                centers[valid],
-                means[valid],
-                linewidth=2.0,
-                linestyle=":",
-                label=f"binned mean ({bins})",
-            )
-            # CI band if available
-            ci_ok = valid & ~np.isnan(lowers) & ~np.isnan(uppers)
-            if np.any(ci_ok):
-                ax.fill_between(
-                    centers[ci_ok], lowers[ci_ok], uppers[ci_ok], alpha=0.15, linewidth=0
-                )
-
-    # --- labels & cosmetics
+    # cosmetics
+    ax.set_title(title or f"Fit for {gene}")
     ax.set_xlabel("Pseudotime")
     ax.set_ylabel(f"Expression {gene}")
-    ax.set_title(title or f"Fit for {gene}")
     if grid:
         ax.grid(True, linewidth=0.6, alpha=0.4)
-    # Set ylim lower to zero
     ax.set_ylim(bottom=0.0)
     ax.legend(frameon=False)
-    fig.tight_layout()
+
+    # clean up
+    del model.adata.obs[tmp_key]
+    del model.adata.obs[tmp_pt]
 
     return fig, ax

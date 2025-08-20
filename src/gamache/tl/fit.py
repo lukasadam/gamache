@@ -13,7 +13,13 @@ from scipy.stats import chi2
 
 from .backend import IRLSBackend, irls_weights
 from .splines import bspline_basis, penalty_matrix
-from .utils import _bh_fdr, _center_of_mass, _dense_curve, _peak_time
+from .utils import (
+    _bh_fdr,
+    _center_of_mass,
+    _dense_curve,
+    _neg_binom_deviance,
+    _peak_time,
+)
 
 
 @dataclass
@@ -191,6 +197,7 @@ class PseudotimeGAM:
         alpha_vec = np.full(adata.n_vars, np.nan, dtype=float)
         edf_vec = np.full(adata.n_vars, np.nan, dtype=float)
         cov_stack = np.full((adata.n_vars, p, p), np.nan, dtype=float) if store_cov else None
+        diagnostic_vec = np.full(adata.n_vars, np.nan, dtype=float)
 
         # choose backend
         if self.backend == "irls":
@@ -204,6 +211,7 @@ class PseudotimeGAM:
                 edf_vec[j] = res.edf
                 if store_cov and res.cov is not None:
                     cov_stack[j] = res.cov
+                diagnostic_vec[j] = res.diagnostics["converged_mu"]
         else:
             raise ValueError("backend must be 'irls'.")
 
@@ -213,6 +221,7 @@ class PseudotimeGAM:
         adata.varm[self.key + "_coef"] = coef_mat
         if store_cov and cov_stack is not None:
             adata.varm[self.key + "_cov"] = cov_stack
+        adata.var[self.key + "_diagnostics"] = diagnostic_vec
 
     def fitted_values(
         self, gene: Union[str, int], *, type: str = "response", keep_nan: bool = True
@@ -301,6 +310,56 @@ class PseudotimeGAM:
 
         eta = off + B @ beta
         return eta if type == "link" else np.exp(eta)
+
+    def _deviance_explained(self, gene: str) -> float:
+        """Calculate the proportion of deviance explained by the fitted model for a gene.
+
+        Parameters
+        ----------
+        gam : PseudotimeGAM-like object
+            Must have attributes:
+            - .adata: AnnData object with gene expression data
+            - .t_filled: Pseudotime values for each cell
+            - .predict(gene, t_new): Predict expression for `gene` at new pseudotime values
+            - .fitted_values(gene): Fitted expression values for `gene` at observed pseudotime
+            - ._get_counts_col(j): Get raw counts for gene at index `j` (1D array for cells)
+        gene : str
+            The gene name for which to calculate deviance explained.
+
+        Returns
+        -------
+        float
+            Proportion of deviance explained by the model for the specified gene.
+        """
+        if isinstance(gene, str):
+            gene = int(np.where(self.adata.var_names == gene)[0][0])
+        y = self._get_counts_col(gene)
+        mu_fit = self.fitted_values(gene)
+        mu_null = np.full_like(y, fill_value=y.mean())  # null model = flat curve
+        alpha = self.adata.var[self.key + "_alpha"][gene]
+
+        dev_resid = _neg_binom_deviance(y, mu_fit, alpha)
+        dev_null = _neg_binom_deviance(y, mu_null, alpha)
+        return 1 - dev_resid / dev_null
+
+    def deviance_explained(
+        self,
+    ) -> float:
+        """Calculate the proportion of deviance explained by the fitted model for all fitted genes.
+
+        Returns
+        -------
+        float
+            Proportion of deviance explained by the model for all fitted genes.
+        """
+        return pd.DataFrame(
+            {
+                "gene": self.adata.var_names,
+                "deviance_explained": [
+                    self._deviance_explained(gene) for gene in self.adata.var_names
+                ],
+            }
+        ).set_index("gene")["deviance_explained"]
 
     # -------- helpers --------
     def _get_counts_col(self, j: int) -> np.ndarray:

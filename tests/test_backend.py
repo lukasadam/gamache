@@ -1,6 +1,5 @@
 import numpy as np
 from numpy.testing import assert_allclose
-from scipy.stats import nbinom
 
 from gamache.tl.backend import (
     IRLSBackend,
@@ -10,7 +9,6 @@ from gamache.tl.backend import (
     estimate_alpha_pearson,
     irls_weights,
     mu_eta,
-    nb2_logpmf,
     penalty_matrix,
     pseudo_response,
 )
@@ -37,18 +35,6 @@ def simulate_nb2(mu, alpha, r):
 # -----------
 # Unit tests
 # -----------
-
-
-def test_nb2_logpmf_matches_scipy():
-    r = rng(1)
-    y = r.integers(0, 30, size=50).astype(float)
-    mu = r.uniform(0.1, 10.0, size=50)
-    alpha = 0.3
-    r0 = 1.0 / alpha
-    p = r0 / (r0 + mu)
-    logpmf_ref = nbinom.logpmf(y, n=r0, p=p)
-    logpmf_ours = nb2_logpmf(y, mu, alpha)
-    assert_allclose(logpmf_ours, logpmf_ref, rtol=1e-10, atol=1e-10)
 
 
 def test_mu_eta_and_shapes():

@@ -103,3 +103,38 @@ def _dense_curve(model, gene, n_grid=200):
     t_grid = np.linspace(lo, hi, n_grid)
     y_grid = model.predict(gene, t_new=t_grid)  # response scale
     return t_grid, y_grid
+
+
+def _neg_binom_deviance(y: np.ndarray, mu: np.ndarray, alpha: float) -> float:
+    """Negative binomial deviance for a given response vector and fitted mean.
+
+    Parameters
+    ----------
+    y : np.ndarray
+        Response vector (e.g., counts).
+    mu : np.ndarray
+        Fitted mean vector (e.g., predicted counts).
+    alpha : float
+        Dispersion parameter (should be positive).
+
+    Returns
+    -------
+    float
+        The negative binomial deviance.
+    """
+    # Clip mu to avoid log(0)
+    mu = np.clip(mu, 1e-8, None)
+
+    # Clip alpha to avoid blow-ups
+    alpha = max(alpha, 1e-8)
+
+    # term1: y * log(y / mu), but define 0*log(0/mu) = 0
+    term1 = np.where(y > 0, y * np.log(y / mu), 0.0)
+
+    # term2: (y + 1/alpha) * log((y + 1/alpha) / (mu + 1/alpha))
+    term2 = (y + 1 / alpha) * np.log((y + 1 / alpha) / (mu + 1 / alpha))
+
+    dev = 2 * np.sum(term1 - term2)
+
+    # ensure nonnegative
+    return float(max(dev, 0.0))

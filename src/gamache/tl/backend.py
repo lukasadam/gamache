@@ -6,42 +6,12 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-from scipy.special import gammaln
 
 from .irls import solve_penalized_wls
 
 # ===========================
 # core utilities
 # ===========================
-
-
-def nb2_logpmf(y: np.ndarray, mu: np.ndarray, alpha: float) -> np.ndarray:
-    """Elementwise NB2 log pmf (ignoring constants not depending on mu/alpha).
-
-    Var(Y)=mu + alpha*mu^2, alpha>0.
-
-    Parameters
-    ----------
-    y : (n,) array-like, non-negative integers (counts)
-        Response variable.
-    mu : (n,) array-like, positive floats (mean)
-        Mean of the distribution.
-    alpha : float, positive (dispersion parameter)
-        Dispersion parameter of the NB2 distribution.
-
-    Returns
-    -------
-    logpmf : (n,) array-like, log pmf values
-        Log pmf values for the NB2 distribution.
-    """
-    r = 1.0 / alpha
-    return (
-        gammaln(y + r)
-        - gammaln(r)
-        - gammaln(y + 1.0)
-        + r * np.log(r / (r + mu))
-        + y * np.log(mu / (r + mu))
-    )
 
 
 def mu_eta(eta: np.ndarray) -> np.ndarray:
