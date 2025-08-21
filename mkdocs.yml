@@ -51,4 +51,4 @@ nav:
   - Usage: usage.md
   - API Reference: api.md
   - Notebooks:
-      - "Exploration": notebooks/01_Trial.ipynb
+      - "Pseudotime testing": notebooks/01_Fit_GAM_to_trajectory.ipynb
