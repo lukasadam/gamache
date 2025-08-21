@@ -7,11 +7,19 @@ from typing import Any, Dict, Optional, Sequence, Union
 
 import anndata as ad
 import numpy as np
+import pandas as pd
 from scipy import sparse
 from scipy.stats import chi2
 
 from .backend import IRLSBackend, irls_weights
 from .splines import bspline_basis, penalty_matrix
+from .utils import (
+    _bh_fdr,
+    _center_of_mass,
+    _dense_curve,
+    _neg_binom_deviance,
+    _peak_time,
+)
 
 
 @dataclass
@@ -189,6 +197,7 @@ class PseudotimeGAM:
         alpha_vec = np.full(adata.n_vars, np.nan, dtype=float)
         edf_vec = np.full(adata.n_vars, np.nan, dtype=float)
         cov_stack = np.full((adata.n_vars, p, p), np.nan, dtype=float) if store_cov else None
+        diagnostic_vec = np.full(adata.n_vars, np.nan, dtype=float)
 
         # choose backend
         if self.backend == "irls":
@@ -202,6 +211,7 @@ class PseudotimeGAM:
                 edf_vec[j] = res.edf
                 if store_cov and res.cov is not None:
                     cov_stack[j] = res.cov
+                diagnostic_vec[j] = res.diagnostics["converged_mu"]
         else:
             raise ValueError("backend must be 'irls'.")
 
@@ -211,6 +221,7 @@ class PseudotimeGAM:
         adata.varm[self.key + "_coef"] = coef_mat
         if store_cov and cov_stack is not None:
             adata.varm[self.key + "_cov"] = cov_stack
+        adata.var[self.key + "_diagnostics"] = diagnostic_vec
 
     def fitted_values(
         self, gene: Union[str, int], *, type: str = "response", keep_nan: bool = True
@@ -300,6 +311,56 @@ class PseudotimeGAM:
         eta = off + B @ beta
         return eta if type == "link" else np.exp(eta)
 
+    def _deviance_explained(self, gene: str) -> float:
+        """Calculate the proportion of deviance explained by the fitted model for a gene.
+
+        Parameters
+        ----------
+        gam : PseudotimeGAM-like object
+            Must have attributes:
+            - .adata: AnnData object with gene expression data
+            - .t_filled: Pseudotime values for each cell
+            - .predict(gene, t_new): Predict expression for `gene` at new pseudotime values
+            - .fitted_values(gene): Fitted expression values for `gene` at observed pseudotime
+            - ._get_counts_col(j): Get raw counts for gene at index `j` (1D array for cells)
+        gene : str
+            The gene name for which to calculate deviance explained.
+
+        Returns
+        -------
+        float
+            Proportion of deviance explained by the model for the specified gene.
+        """
+        if isinstance(gene, str):
+            gene = int(np.where(self.adata.var_names == gene)[0][0])
+        y = self._get_counts_col(gene)
+        mu_fit = self.fitted_values(gene)
+        mu_null = np.full_like(y, fill_value=y.mean())  # null model = flat curve
+        alpha = self.adata.var[self.key + "_alpha"][gene]
+
+        dev_resid = _neg_binom_deviance(y, mu_fit, alpha)
+        dev_null = _neg_binom_deviance(y, mu_null, alpha)
+        return 1 - dev_resid / dev_null
+
+    def deviance_explained(
+        self,
+    ) -> float:
+        """Calculate the proportion of deviance explained by the fitted model for all fitted genes.
+
+        Returns
+        -------
+        float
+            Proportion of deviance explained by the model for all fitted genes.
+        """
+        return pd.DataFrame(
+            {
+                "gene": self.adata.var_names,
+                "deviance_explained": [
+                    self._deviance_explained(gene) for gene in self.adata.var_names
+                ],
+            }
+        ).set_index("gene")["deviance_explained"]
+
     # -------- helpers --------
     def _get_counts_col(self, j: int) -> np.ndarray:
         """Get raw counts for gene at index `j` (1D array for cells).
@@ -338,7 +399,11 @@ class PseudotimeGAM:
         np.ndarray
             The fitted coefficients for the specified gene.
         """
-        j = gene if isinstance(gene, int) else int(np.where(self.adata.var_names == gene)[0][0])
+        j = (
+            gene
+            if isinstance(gene, (int, np.integer))
+            else int(np.where(self.adata.var_names == gene)[0][0])
+        )
         beta = self.adata.varm[self.key + "_coef"][j]
         if not np.isfinite(beta).all():
             raise ValueError(
@@ -400,7 +465,11 @@ class PseudotimeGAM:
         cov_key = self.key + "_cov"
         if cov_key in self.adata.varm:
             cov_stack = self.adata.varm[cov_key]
-            j = gene if isinstance(gene, int) else int(np.where(self.adata.var_names == gene)[0][0])
+            j = (
+                gene
+                if isinstance(gene, (int, np.integer))
+                else int(np.where(self.adata.var_names == gene)[0][0])
+            )
             cov = cov_stack[j]
             if np.isfinite(cov).all():
                 return beta, cov
@@ -410,7 +479,11 @@ class PseudotimeGAM:
         # get alpha_hat for this gene
         alpha = float(
             self.adata.var[self.key + "_alpha"][
-                gene if isinstance(gene, int) else np.where(self.adata.var_names == gene)[0][0]
+                (
+                    gene
+                    if isinstance(gene, (int, np.integer))
+                    else np.where(self.adata.var_names == gene)[0][0]
+                )
             ]
         )
         if not np.isfinite(alpha) or alpha <= 0:
@@ -543,6 +616,182 @@ class PseudotimeGAM:
         B_end = self._basis_row(t_end)  # (p,)
         c = B_end - B_start  # (p,)
         return self.contrast_test(gene, c)
+
+    def test_all(
+        self,
+        genes: Optional[Sequence[Union[str, int]]] = None,
+        *,
+        test: str = "association",  # "association" | "start_end" | "contrast"
+        exclude_intercept: bool = False,  # for association()
+        start_q: float = 0.05,  # for start_end()
+        end_q: float = 0.95,  # for start_end()
+        contrast: Optional[np.ndarray] = None,  # for contrast()
+        min_cells: int = 10,  # detection: ≥ this many cells with count > 0
+        mcc: str = "fdr_bh",  # multiple testing correction
+        return_curve_summaries: bool = True,  # adds CoM, t_peak, mean_fitted
+        grid_points: int = 200,  # for curve summaries
+    ) -> pd.DataFrame:
+        """Run a chosen pseudotime test for all (detected) genes.
+
+        Parameters
+        ----------
+        genes : Optional[Sequence[Union[str, int]]], optional
+            Genes to test. If None, test all genes in adata.var_names (default: None).
+        test : str, optional
+            The type of test to run. Can be "association", "start_end", or "contrast" (default: "association").
+        exclude_intercept : bool, optional
+            Whether to exclude the intercept term from the association test (default: False).
+        start_q : float, optional
+            Quantile to use for the start time in the start-end test (default: 0.05).
+        end_q : float, optional
+            Quantile to use for the end time in the start-end test (default: 0.95).
+        contrast : Optional[np.ndarray], optional
+            Contrast vector to use for the contrast test. Must be provided if test is "contrast" (default: None).
+        min_cells : int, optional
+            Minimum number of cells with counts > 0 to consider a gene detected (default: 10).
+        mcc : str, optional
+            Method for multiple testing correction. Can be "fdr_bh", "bonferroni", or "holm" (default: "fdr_bh").
+        return_curve_summaries : bool, optional
+            Whether to return curve summaries for each gene (default: True).
+        grid_points : int, optional
+            Number of points in the dense grid for curve summaries (default: 200).
+
+        Raises
+        ------
+        ValueError
+            If the test type is not recognized, or if the contrast vector is not provided for the contrast test.
+
+        Returns
+        -------
+        pd.DataFrame
+            A tidy DataFrame containing the results of the pseudotime tests for all detected genes.
+        """
+        # --- resolve gene indices ---
+        adata = self.adata
+        if genes is None:
+            idx = np.arange(adata.n_vars, dtype=int)
+        else:
+            idx = np.asarray(
+                [
+                    g if isinstance(g, int) else int(np.where(adata.var_names == g)[0][0])
+                    for g in genes
+                ],
+                dtype=int,
+            )
+        gene_names = adata.var_names.to_numpy()
+
+        # --- detection filter ---
+        detected = []
+        n_detected = []
+        for j in idx:
+            y = self._get_counts_col(j)
+            n_det = int(np.sum(y > 0))
+            if n_det >= int(min_cells):
+                detected.append(j)
+                n_detected.append(n_det)
+        if len(detected) == 0:
+            return pd.DataFrame(
+                columns=[
+                    "gene",
+                    "statistic",
+                    "pvalue",
+                    "qvalue",
+                    "n_detected",
+                    "edf",
+                    "alpha",
+                    "center_of_mass",
+                    "t_peak",
+                    "mean_fitted",
+                ]
+            )
+
+        # --- run tests ---
+        stats = []
+        pvals = []
+        edf = self.adata.var.get(self.key + "_edf", np.full(adata.n_vars, np.nan)).to_numpy()
+        alpha = self.adata.var.get(self.key + "_alpha", np.full(adata.n_vars, np.nan)).to_numpy()
+
+        CoM = []
+        Tpeak = []
+        MeanFit = []
+
+        for j in detected:
+            # run the selected test
+            if test == "association":
+                out = self.association_test(j, exclude_intercept=exclude_intercept)
+            elif test == "start_end":
+                # use quantiles on training times
+                t_start = float(np.quantile(self.t_filled, start_q))
+                t_end = float(np.quantile(self.t_filled, end_q))
+                out = self.start_end_test(j, t_start=t_start, t_end=t_end, quantile=start_q)
+            elif test == "contrast":
+                if contrast is None:
+                    raise ValueError("contrast must be provided for test='contrast'.")
+                out = self.contrast_test(j, contrast)
+            else:
+                raise ValueError("test must be 'association', 'start_end', or 'contrast'.")
+
+            stats.append(out["statistic"])
+            pvals.append(out["pvalue"])
+
+            # curve summaries on response scale
+            if return_curve_summaries:
+                tg, yg = _dense_curve(self, j, n_grid=grid_points)
+                CoM.append(_center_of_mass(tg, yg))
+                Tpeak.append(_peak_time(tg, yg))
+                MeanFit.append(float(np.nanmean(yg)))
+            else:
+                CoM.append(np.nan)
+                Tpeak.append(np.nan)
+                MeanFit.append(np.nan)
+
+        # --- multiple testing correction ---
+        if mcc == "fdr_bh":
+            qvals = _bh_fdr(pvals)
+        elif mcc in {"bonferroni", "holm"}:
+            # quick simple alternatives
+            p = np.asarray(pvals, float)
+            m = np.isfinite(p).sum()
+            if mcc == "bonferroni":
+                qvals = np.clip(p * m, 0.0, 1.0)
+            else:  # Holm step-down (conservative, simple implementation)
+                order = np.argsort(np.where(np.isfinite(p), p, np.inf))
+                q = np.full_like(p, np.nan, float)
+                k = 1
+                for r in order:
+                    if np.isfinite(p[r]):
+                        q[r] = min((m - k + 1) * p[r], 1.0)
+                        k += 1
+                # monotone adjustment from small to large p
+                for i in range(1, len(order)):
+                    a, b = order[i - 1], order[i]
+                    if np.isfinite(q[a]) and np.isfinite(q[b]):
+                        q[b] = max(q[b], q[a])
+                qvals = q
+        else:
+            raise ValueError("Unsupported mcc. Use 'fdr_bh', 'bonferroni', or 'holm'.")
+
+        # --- pack results ---
+        df = (
+            pd.DataFrame(
+                {
+                    "gene": gene_names[np.array(detected, dtype=int)],
+                    "statistic": np.asarray(stats, float),
+                    "pvalue": np.asarray(pvals, float),
+                    "qvalue": np.asarray(qvals, float),
+                    "n_detected": np.asarray(n_detected, int),
+                    "edf": edf[np.array(detected, dtype=int)],
+                    "alpha": alpha[np.array(detected, dtype=int)],
+                    "center_of_mass": np.asarray(CoM, float),
+                    "t_peak": np.asarray(Tpeak, float),
+                    "mean_fitted": np.asarray(MeanFit, float),
+                }
+            )
+            .sort_values("qvalue", kind="mergesort", na_position="last")
+            .reset_index(drop=True)
+        )
+
+        return df
 
 
 # Standalone function for PseudotimeGAM

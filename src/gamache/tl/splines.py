@@ -52,7 +52,6 @@ def bspline_basis(
             np.repeat(t_max, degree + 1),
         ]
     )
-    print(f"Using {len(knots)} knots for B-spline basis (df={df}, degree={degree})")
     B = _bspline_design(t, knots, degree)
     if not include_intercept:
         # drop the first column to avoid implicit intercept

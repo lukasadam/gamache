@@ -33,3 +33,4 @@ uv.lock
 # Ignore data files
 *.h5
 *.h5ad
+*.pdf
