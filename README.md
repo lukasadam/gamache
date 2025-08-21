@@ -1,4 +1,4 @@
-<img  src="docs/assets/gamache_logo.png" alt="gamache logo" width="250">
+<img  src="docs/assets/images/gamache_logo.png" alt="gamache logo" width="250">
 
 [![gamache CI/CD (uv)](https://github.com/lukasadam/gamache/actions/workflows/python-ci-cd.yml/badge.svg)](https://github.com/lukasadam/gamache/actions/workflows/python-ci-cd.yml)
 [![Coverage](https://codecov.io/gh/lukasadam/gamache/branch/develop/graph/badge.svg)](https://codecov.io/gh/lukasadam/gamache)
@@ -25,9 +25,15 @@ Gamache aims to fill this gap by providing a **lightweight, tradeSeq-style workf
 
 - Generalized Additive Model (GAM) fitting utilities
 - Association testing along pseudotime / trajectories
-- Block-design construction with block-diagonal penalties
-- IRLS-based fitting backend
 - Plotting helpers
+
+## Project Status 🚧
+
+**Gamache is under active development.**
+The fitting functionality is not yet reliable, and results (e.g. association testing) should not be considered stable.
+APIs may change without notice, and breaking changes are expected as the project evolves.
+
+Feedback and issues are very welcome at this stage!
 
 ## Installation
 

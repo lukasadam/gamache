@@ -1,12 +1,20 @@
 site_name: gamache
-site_description: "gamache documentation"
+site_description: "Fit GAMs to single-cell data"
 site_url: https://lukasadam.github.io/gamache/
 repo_url: https://github.com/lukasadam/gamache
 repo_name: lukasadam/gamache
+extra_css:
+  - assets/stylesheets/extra.css
 
 theme:
   name: material
+  palette:
+    primary: white
+  logo: assets/images/gamache_logo.png
+  language: en
   features:
+    - tabs
+    - instant
     - navigation.tabs
     - navigation.indexes
     - search.highlight
@@ -22,14 +30,16 @@ plugins:
       handlers:
         python:
           paths: [src]
+          setup_commands:
+            - import sys
+            - sys.path.append("src")
           options:
-            docstring_style: google
+            docstring_style: numpy
             show_root_heading: true
             merge_init_into_class: true
             show_source: true
             show_signature: true
             separate_signature: true
-            members_order: source
 
 markdown_extensions:
   - admonition
