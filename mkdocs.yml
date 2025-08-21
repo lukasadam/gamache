@@ -30,9 +30,6 @@ plugins:
       handlers:
         python:
           paths: [src]
-          setup_commands:
-            - import sys
-            - sys.path.append("src")
           options:
             docstring_style: numpy
             show_root_heading: true
