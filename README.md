@@ -24,12 +24,18 @@ Gamache aims to fill this gap by providing a **lightweight, tradeSeq-style workf
 ## Features
 
 - Generalized Additive Model (GAM) fitting utilities
-- Association testing along pseudotime / trajectories
+- Association testing / Start vs. End testing along pseudotime
 - Plotting helpers
+
+## Roadmap
+
+- Clustering of variables features
+- Between lineages DE testing (diffEnd test, pattern test, earlyDE test)
 
 ## Project Status
 
 🚧 **Gamache** is under active development. APIs may change without notice, and breaking changes are expected as the project evolves.
+
 Feedback and issues are very welcome at this stage!
 
 ## Installation
@@ -69,8 +75,7 @@ gm.pl.plot_gene_heatmap(adata, list(results_df.index), model=model)
 
 ## Documentation
 
-- User & API docs (MkDocs): **https://<ORG>.github.io/gamache/**
-- Notebooks: `docs/notebooks/` and `notebooks/`
+- User & API docs (MkDocs): **https://gamache.readthedocs.io/en/latest/**
 
 ## Contributing
 
