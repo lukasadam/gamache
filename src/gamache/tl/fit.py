@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Sequence, Union
+from typing import Dict, Optional, Sequence, Union
 
 import anndata as ad
 import numpy as np
 import pandas as pd
+import statsmodels.api as sm
 from scipy import sparse
 from scipy.stats import chi2
+from statsmodels.gam.api import BSplines, GLMGam
 
-from .backend import IRLSBackend, irls_weights
-from .splines import bspline_basis, penalty_matrix
 from .utils import (
     _bh_fdr,
     _center_of_mass,
@@ -24,11 +24,11 @@ from .utils import (
 
 @dataclass
 class PseudotimeGAM:
-    """Single-trajectory NB-GAM with a selectable backend."""
+    """Model to fit a single-trajectory Negative Binomial Generalized Additive Model (NB-GAM) to pseudotime data."""
 
     # config / inputs
     adata: ad.AnnData = field(repr=False)
-    counts_layer: Optional[str] = "counts"
+    layer: Optional[str] = "counts"
     pseudotime_key: str = "dpt_pseudotime"
     size_factors_key: str = "size_factors"
     df: int = 6
@@ -36,9 +36,8 @@ class PseudotimeGAM:
     lam: float = 1.0
     include_intercept: bool = False
     key: str = "nbgam1d"
-    nonfinite: str = "error"
-    backend: str = "irls"
-    backend_kwargs: Dict[str, Any] = field(default_factory=dict)
+    nonfinite: str = "error"  # "error" | "mask" | "median"
+    nb_alpha: Optional[float] = None  # if None, estimate per gene via method-of-moments
 
     # derived (built in __post_init__)
     t: np.ndarray = field(init=False, repr=False)
@@ -46,18 +45,19 @@ class PseudotimeGAM:
     _obs_weight_mask: np.ndarray = field(init=False, repr=False)
     sf: np.ndarray = field(init=False, repr=False)
     offset: np.ndarray = field(init=False, repr=False)
-    X: np.ndarray = field(init=False, repr=False)
+    smoother: BSplines = field(init=False, repr=False)
+    X: np.ndarray = field(init=False, repr=False)  # (n, p) spline design used by statsmodels
     p: int = field(init=False)
-    S: np.ndarray = field(init=False, repr=False)
-    _counts_layer: Optional[str] = field(init=False, repr=False)
+    _layer: Optional[str] = field(init=False, repr=False)
 
+    # ----------------------- construction -----------------------
     def __post_init__(self) -> None:
         """Initialize the PseudotimeGAM object by validating inputs and constructing the model."""
-        # ----- pseudotime -----
         if self.pseudotime_key not in self.adata.obs:
             raise ValueError(
                 f"Expected a single pseudotime column '{self.pseudotime_key}' in .obs."
             )
+        # Store pseudotime as np.ndarray, sanitize non-finite values
         t_raw = self.adata.obs[self.pseudotime_key].to_numpy(dtype=float)
         finite = np.isfinite(t_raw)
         n_bad = int((~finite).sum())
@@ -92,7 +92,7 @@ class PseudotimeGAM:
         self.t_filled = t_clean
         self._obs_weight_mask = mask_w
 
-        # ----- size factors / offset -----
+        # size factors & offset
         if self.size_factors_key in self.adata.obs:
             sf = self.adata.obs[self.size_factors_key].to_numpy(dtype=float)
         else:
@@ -100,31 +100,28 @@ class PseudotimeGAM:
                 sf = self.adata.obs["n_counts"].to_numpy(dtype=float)
             else:
                 Xmat = (
-                    self.adata.layers[self.counts_layer]
-                    if self.counts_layer
+                    self.adata.layers[self.layer]
+                    if self.layer
                     and (self.adata.layers is not None)
-                    and (self.counts_layer in self.adata.layers)
+                    and (self.layer in self.adata.layers)
                     else self.adata.X
                 )
                 sf = np.asarray(Xmat.sum(axis=1)).ravel().astype(float)
         self.sf = sf / np.median(np.clip(sf, 1e-12, None))
         self.offset = np.log(self.sf + 1e-12)
 
-        # ----- design & penalty -----
-        B, basis_info = bspline_basis(
-            self.t_filled,
-            df=int(self.df),
-            degree=int(self.degree),
+        # B-spline basis
+        self.smoother = BSplines(
+            self.t_filled[:, None],
+            df=[int(self.df)],
+            degree=[int(self.degree)],
             include_intercept=bool(self.include_intercept),
-        )  # (n, p)
-        if not np.isfinite(B).all():
+        )
+        self.X = np.asarray(self.smoother.basis)  # (n, p)
+        if not np.isfinite(self.X).all():
             raise ValueError("B-spline basis contains non-finite values after sanitization.")
-        self.X = B
-        self.p = int(B.shape[1])
-        self.S = float(self.lam) * penalty_matrix(self.p, order=2)
-        self._counts_layer = self.counts_layer
-
-        self.lineage_slices = [slice(0, self.p)]  # single-trajectory slice
+        self.p = int(self.smoother.dim_basis)
+        self._layer = self.layer
 
         # metadata
         meta_basis = {
@@ -132,29 +129,42 @@ class PseudotimeGAM:
             "degree": int(self.degree),
             "include_intercept": bool(self.include_intercept),
             "p": self.p,
-            "basis_info": basis_info,
         }
         if self.nonfinite != "error":
             meta_basis["t_median_fill"] = float(np.median(self.t_filled))
         self.adata.uns[self.key] = {
             "pseudotime_key": self.pseudotime_key,
             "size_factors_key": self.size_factors_key,
-            "counts_layer": self.counts_layer,
+            "layer": self.layer,
             "basis": meta_basis,
             "lambda": float(self.lam),
             "nonfinite": self.nonfinite,
-            "backend": self.backend,
-            "backend_kwargs": dict(self.backend_kwargs),
+            "backend": "statsmodels_glmgam",
         }
 
-    # -------- fit / predict ----------
-    def fit(
-        self,
-        genes: Optional[Sequence[Union[str, int]]] = None,
-        *,
-        store_cov: bool = False,
-    ) -> None:
-        """Fit per gene with the selected backend and write results to AnnData.
+    # ----------------------- fitting & prediction -----------------------
+    @staticmethod
+    def _alpha_mom(y: np.ndarray) -> float:
+        """Method-of-moments NB2 dispersion (alpha) with floor.
+
+        Parameters
+        ----------
+        y
+            (n,) array of counts for a single gene
+
+        Returns
+        -------
+        alpha
+            estimated dispersion parameter (≥ 1e-10)
+        """
+        m = float(np.mean(y))
+        v = float(np.var(y, ddof=1)) if y.size > 1 else 0.0
+        if m <= 0.0:
+            return 1.0
+        return float(max(1e-10, (v - m) / (m**2 + 1e-12)))
+
+    def fit(self, genes=None, *, store_cov: bool = False) -> None:
+        """Fit per gene and write results back to AnnData.
 
         Parameters
         ----------
@@ -172,15 +182,21 @@ class PseudotimeGAM:
 
         Notes
         -----
-        This method fits a penalized weighted least squares model for each gene using the specified backend.
-        The results are stored in the AnnData object under the specified keys.
+        This method uses the implementation from statsmodels to fit a penalized weighted least squares model
+        for each gene. The results are stored in the AnnData object under the specified keys.
         """
         adata = self.adata
-        X, S, offset = self.X, self.S, self.offset
-        obs_w = self._obs_weight_mask
-        n, p = X.shape
 
-        # resolve gene indices
+        # build smoother on training pseudotime
+        x = np.asarray(self.t_filled, float)
+        self._tmin, self._tmax = float(np.min(x)), float(np.max(x))
+        self.smoother = BSplines(x[:, None], df=[int(self.df)], degree=[int(self.degree)])
+
+        n = x.size
+        p = int(self.smoother.dim_basis)
+        exog_lin = np.ones((n, 1))  # intercept
+
+        # gene indices
         if genes is None:
             idx = np.arange(adata.n_vars, dtype=int)
         else:
@@ -193,32 +209,47 @@ class PseudotimeGAM:
             )
 
         # outputs
-        coef_mat = np.full((adata.n_vars, p), np.nan, dtype=float)
-        alpha_vec = np.full(adata.n_vars, np.nan, dtype=float)
-        edf_vec = np.full(adata.n_vars, np.nan, dtype=float)
-        cov_stack = np.full((adata.n_vars, p, p), np.nan, dtype=float) if store_cov else None
-        diagnostic_vec = np.full(adata.n_vars, np.nan, dtype=float)
+        coef_mat = np.full((adata.n_vars, p), np.nan, float)
+        edf_vec = np.full(adata.n_vars, np.nan, float)
+        alpha_vec = np.full(adata.n_vars, 1.0, float)  # fixed NB alpha
+        cov_stack = np.full((adata.n_vars, p, p), np.nan, float) if store_cov else None
+        diagnostic_vec = np.full(adata.n_vars, np.nan, float)
 
-        # choose backend
-        if self.backend == "irls":
-            bk = IRLSBackend(return_cov=store_cov, **self.backend_kwargs)
-            # per-gene fits
-            for j in idx:
-                y = self._get_counts_col(j).astype(float)
-                res = bk.fit(y=y, X=X, S=S, offset=offset, obs_weights=obs_w)
-                coef_mat[j] = res.beta
-                alpha_vec[j] = res.alpha
-                edf_vec[j] = res.edf
-                if store_cov and res.cov is not None:
-                    cov_stack[j] = res.cov
-                diagnostic_vec[j] = res.diagnostics["converged_mu"]
-        else:
-            raise ValueError("backend must be 'irls'.")
+        self._results_ = {}
+
+        for j in idx:
+            y = self._get_counts_col(j).astype(float)
+
+            model = GLMGam(
+                y,
+                exog=exog_lin,
+                smoother=self.smoother,
+                family=sm.families.NegativeBinomial(alpha=1.0),
+                # uncomment if you want library-size normalization:
+                # offset=self.offset,
+            )
+            res = model.fit()
+            self._results_[int(j)] = res
+
+            k_lin = int(model.k_exog_linear)  # = 1
+            params = np.asarray(res.params)
+            coef_mat[j] = params[k_lin : k_lin + p]
+
+            try:
+                edf_vec[j] = float(np.nansum(np.asarray(res.edf)[k_lin : k_lin + p]))
+            except Exception:
+                edf_vec[j] = np.nan
+
+            if store_cov:
+                C = np.asarray(res.cov_params())
+                cov_stack[j] = C[k_lin : k_lin + p, k_lin : k_lin + p]
+
+            diagnostic_vec[j] = float(np.isfinite(res.fittedvalues).all())
 
         # write back
-        adata.var[self.key + "_alpha"] = alpha_vec
-        adata.var[self.key + "_edf"] = edf_vec
         adata.varm[self.key + "_coef"] = coef_mat
+        adata.var[self.key + "_edf"] = edf_vec
+        adata.var[self.key + "_alpha"] = alpha_vec
         if store_cov and cov_stack is not None:
             adata.varm[self.key + "_cov"] = cov_stack
         adata.var[self.key + "_diagnostics"] = diagnostic_vec
@@ -226,21 +257,21 @@ class PseudotimeGAM:
     def fitted_values(
         self, gene: Union[str, int], *, type: str = "response", keep_nan: bool = True
     ) -> np.ndarray:
-        """Get fitted values for a specific gene.
+        """Get fitted values for a specific gene at the training pseudotime.
 
         Parameters
         ----------
         gene : Union[str, int]
             The gene to get fitted values for.
         type : str, optional
-            The type of fitted values to return. Can be "link" or "response" (default: "response").
+            The type of fitted values to return ("link" or "response", default: "response").
         keep_nan : bool, optional
             Whether to keep NaN values in the output (default: True).
 
         Returns
         -------
         np.ndarray
-            The fitted values for the specified gene.
+            The fitted values for the specified gene at the training pseudotime.
         """
         beta = self._get_beta(gene)
         eta = self.offset + self.X @ beta
@@ -254,10 +285,9 @@ class PseudotimeGAM:
         self,
         gene: Union[str, int],
         t_new: Optional[np.ndarray] = None,
-        size_factors: Optional[np.ndarray] = None,
         *,
-        type: str = "response",
-    ) -> np.ndarray:
+        return_ci: bool = False,
+    ) -> Union[np.ndarray, tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """Predict fitted values for a specific gene at new times.
 
         Parameters
@@ -266,51 +296,56 @@ class PseudotimeGAM:
             The gene to predict fitted values for.
         t_new : Optional[np.ndarray], optional
             New time points to predict fitted values at (default: None).
-        size_factors : Optional[np.ndarray], optional
-            Size factors to use for prediction (default: None).
-        type : str, optional
-            The type of fitted values to return. Can be "link" or "response" (default: "response").
+        return_ci : bool, optional
+            Whether to return 95% confidence intervals along with the mean (default: False).
 
         Returns
         -------
         np.ndarray
-            The predicted fitted values for the specified gene at the new time points.
+            The predicted mean (and optional CI) for the specified gene at the new time points.
         """
-        beta = self._get_beta(gene)
+        # resolve gene index
+        j = (
+            gene
+            if isinstance(gene, (int, np.integer))
+            else int(np.where(self.adata.var_names == gene)[0][0])
+        )
+        if not hasattr(self, "_results_") or int(j) not in self._results_:
+            raise RuntimeError("No fitted model for this gene. Call .fit() first.")
 
-        if t_new is None:
-            B = self.X
-            off = self.offset
-        else:
-            t_new = np.asarray(t_new, dtype=float)
-            finite = np.isfinite(t_new)
-            if finite.sum() == 0:
-                raise ValueError("t_new contains no finite values.")
-            t_med = float(np.median(t_new[finite]))
-            t_new = np.where(finite, t_new, t_med)
+        res = self._results_[int(j)]
 
-            lo, hi = np.quantile(t_new, [0.001, 0.999])
-            if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
-                t_new = np.clip(t_new, lo, hi)
-            if float(np.max(t_new) - np.min(t_new)) == 0.0:
-                n = t_new.size
-                t_new = t_new + np.linspace(-1e-9, 1e-9, n)
+        # default to training times
+        x_new = np.asarray(self.t_filled if t_new is None else t_new, float)
 
-            B, _ = bspline_basis(
-                t_new,
-                df=int(self.df),
-                degree=int(self.degree),
-                include_intercept=bool(self.include_intercept),
-            )
-            off = (
-                0.0
-                if size_factors is None
-                else np.log(np.asarray(size_factors, dtype=float) + 1e-12)
-            )
+        # handle non-finite
+        finite = np.isfinite(x_new)
+        if not finite.any():
+            raise ValueError("t_new contains no finite values.")
+        t_med = float(np.median(x_new[finite]))
+        x_new = np.where(finite, x_new, t_med)
 
-        eta = off + B @ beta
-        return eta if type == "link" else np.exp(eta)
+        # clamp strictly inside [tmin, tmax] to satisfy BSplines.transform
+        tmin, tmax = float(self._tmin), float(self._tmax)
+        # nudge to open interval to be extra safe
+        left = np.nextafter(tmin, np.inf)
+        right = np.nextafter(tmax, -np.inf)
+        x_new = np.clip(x_new, left, right)
 
+        exog_lin = np.ones((x_new.size, 1))
+        exog_spl = x_new[:, None]
+
+        pred = res.get_prediction(exog=exog_lin, exog_smooth=exog_spl)
+        sf = pred.summary_frame()  # mean, mean_se, mean_ci_lower, mean_ci_upper
+
+        mean = np.asarray(sf["mean"], float)
+        if return_ci:
+            lower = np.asarray(sf["mean_ci_lower"], float)
+            upper = np.asarray(sf["mean_ci_upper"], float)
+            return mean, lower, upper
+        return mean
+
+    # ----------------------- model quality -----------------------
     def _deviance_explained(self, gene: str) -> float:
         """Calculate the proportion of deviance explained by the fitted model for a gene.
 
@@ -376,10 +411,10 @@ class PseudotimeGAM:
             The raw counts for the specified gene.
         """
         Xmat = (
-            self.adata.layers[self._counts_layer]
-            if self._counts_layer
+            self.adata.layers[self._layer]
+            if self._layer
             and (self.adata.layers is not None)
-            and (self._counts_layer in self.adata.layers)
+            and (self._layer in self.adata.layers)
             else self.adata.X
         )
         if sparse.issparse(Xmat):
@@ -412,9 +447,8 @@ class PseudotimeGAM:
             )
         return beta
 
-    # --- internal: one-row basis at a given t (sanitized like training t) ---
     def _basis_row(self, t: float) -> np.ndarray:
-        """Get a single row of the B-spline design matrix at time `t`.
+        """Get B-spline basis row for a single time point `t`.
 
         Parameters
         ----------
@@ -430,25 +464,17 @@ class PseudotimeGAM:
         finite = np.isfinite(x)
         if finite.sum() == 0:
             raise ValueError("Provided t is non-finite.")
-        # sanitize same way as training
+        # sanitize like training
         t_med = float(np.median(self.t_filled))
         x = np.where(finite, x, t_med)
         lo, hi = np.quantile(self.t_filled, [0.001, 0.999])
         if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
             x = np.clip(x, lo, hi)
-        if float(np.max(x) - np.min(x)) == 0.0:
-            x = x + np.array([0.0])  # keeps shape consistent
-        B, _ = bspline_basis(
-            x,
-            df=int(self.df),
-            degree=int(self.degree),
-            include_intercept=bool(self.include_intercept),
-        )
+        B = np.asarray(self.smoother.transform(x[:, None]))
         return B.ravel()  # (p,)
 
-    # --- internal: get beta and a covariance for Wald tests ---
     def _get_beta_cov(self, gene: Union[str, int]) -> tuple[np.ndarray, np.ndarray]:
-        """Get fitted coefficients and covariance for a specific gene.
+        """Return (beta, cov) for Wald tests. If cov not stored, refit quickly for that gene.
 
         Parameters
         ----------
@@ -458,10 +484,9 @@ class PseudotimeGAM:
         Returns
         -------
         tuple[np.ndarray, np.ndarray]
-            The fitted coefficients and covariance for the specified gene.
+            The fitted coefficients and covariance matrix for the specified gene.
         """
         beta = self._get_beta(gene)
-        # 1) prefer stored covariance (IRLS with store_cov=True)
         cov_key = self.key + "_cov"
         if cov_key in self.adata.varm:
             cov_stack = self.adata.varm[cov_key]
@@ -474,33 +499,29 @@ class PseudotimeGAM:
             if np.isfinite(cov).all():
                 return beta, cov
 
-        # 2) otherwise, approximate from final fit using penalized Hessian
-        #    cov ≈ (X^T W X + S)^{-1}
-        # get alpha_hat for this gene
-        alpha = float(
-            self.adata.var[self.key + "_alpha"][
-                (
-                    gene
-                    if isinstance(gene, (int, np.integer))
-                    else np.where(self.adata.var_names == gene)[0][0]
-                )
-            ]
+        # fallback: refit just this gene to get covariance
+        j = (
+            gene
+            if isinstance(gene, (int, np.integer))
+            else int(np.where(self.adata.var_names == gene)[0][0])
         )
-        if not np.isfinite(alpha) or alpha <= 0:
-            raise ValueError("Cannot approximate covariance: invalid alpha for gene.")
-        mu = np.exp(self.offset + self.X @ beta)
-        w = irls_weights(mu, alpha) * self._obs_weight_mask
-        if np.all(w == 0):
-            raise ValueError("All observation weights are zero; cannot form covariance.")
-        Xw = self.X * np.sqrt(w)[:, None]
-        XtWX = Xw.T @ Xw
-        A = XtWX + self.S
-        # numerical safety ridge
-        try:
-            A_inv = np.linalg.inv(A)
-        except np.linalg.LinAlgError:
-            A_inv = np.linalg.pinv(A)
-        return beta, A_inv
+        y = self._get_counts_col(j).astype(float)
+        nb_alpha = float(self.adata.var[self.key + "_alpha"][j])
+        fam = sm.families.NegativeBinomial(
+            alpha=nb_alpha if np.isfinite(nb_alpha) and nb_alpha > 0 else self._alpha_mom(y)
+        )
+        mod = GLMGam(
+            y,
+            exog=None,
+            smoother=self.smoother,
+            alpha=float(self.lam),
+            family=fam,
+            offset=self.offset,
+        )
+        weights = self._obs_weight_mask if (self.nonfinite == "mask") else None
+        res = mod.fit(weights=weights)
+        C = np.asarray(res.cov_params())[: self.p, : self.p]
+        return beta, C
 
     # --------- public Wald tests ---------
 
@@ -794,10 +815,10 @@ class PseudotimeGAM:
         return df
 
 
-# Standalone function for PseudotimeGAM
+# ----------------------- convenience wrapper -----------------------
 def fit_gam(
     adata: ad.AnnData,
-    counts_layer: Optional[str] = "counts",
+    layer: Optional[str] = "counts",
     pseudotime_key: str = "dpt_pseudotime",
     size_factors_key: str = "size_factors",
     df: int = 6,
@@ -806,46 +827,12 @@ def fit_gam(
     include_intercept: bool = False,
     key: str = "nbgam1d",
     nonfinite: str = "error",
-    backend: str = "irls",
-    **kwargs,
+    nb_alpha: Optional[float] = None,
 ) -> PseudotimeGAM:
-    """Fit a PseudotimeGAM model to the given AnnData.
-
-    Parameters
-    ----------
-    adata : ad.AnnData
-        The AnnData object containing the data.
-    counts_layer : Optional[str], optional
-        The layer in adata containing the raw counts (default: "counts").
-    pseudotime_key : str, optional
-        The key in adata.obs containing the pseudotime values (default: "dpt_pseudotime").
-    size_factors_key : str, optional
-        The key in adata.obs containing size factors (default: "size_factors").
-    df : int, optional
-        Degrees of freedom for the B-spline basis (default: 6).
-    degree : int, optional
-        Degree of the B-spline (default: 3).
-    lam : float, optional
-        Regularization parameter (default: 1.0).
-    include_intercept : bool, optional
-        Whether to include an intercept term in the model (default: False).
-    key : str, optional
-        Key prefix for storing results in adata.var (default: "nbgam1d").
-    nonfinite : str, optional
-        How to handle non-finite pseudotime values: "error", "mask", or "median" (default: "error").
-    backend : str, optional
-        The backend to use for fitting. Currently only "irls" is supported (default: "irls").
-    **kwargs : Any
-        Additional keyword arguments for the backend.
-
-    Returns
-    -------
-    PseudotimeGAM
-        The fitted PseudotimeGAM model.
-    """
+    """Fit a PseudotimeGAM model to the given AnnData using statsmodels GLMGam."""
     model = PseudotimeGAM(
         adata=adata,
-        counts_layer=counts_layer,
+        layer=layer,
         pseudotime_key=pseudotime_key,
         size_factors_key=size_factors_key,
         df=df,
@@ -854,8 +841,7 @@ def fit_gam(
         include_intercept=include_intercept,
         key=key,
         nonfinite=nonfinite,
-        backend=backend,
-        backend_kwargs=kwargs,
+        nb_alpha=nb_alpha,
     )
     model.fit()
     return model

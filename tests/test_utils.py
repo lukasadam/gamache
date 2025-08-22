@@ -16,11 +16,10 @@ def _fit_one_gene_model(adata, gene="g0", key="nbgam_utils"):
     """Fit a one-gene model quickly for utility tests."""
     m = PseudotimeGAM(
         adata=adata,
-        counts_layer="counts",
+        layer="counts",
         pseudotime_key="dpt_pseudotime",
         size_factors_key="size_factors",
         key=key,
-        backend="irls",
         nonfinite="error",
     )
     idx = int(np.where(adata.var_names == gene)[0][0])
