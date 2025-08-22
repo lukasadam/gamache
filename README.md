@@ -1,7 +1,7 @@
 <img  src="docs/assets/images/gamache_logo.png" alt="gamache logo" width="250">
 
 [![gamache CI/CD (uv)](https://github.com/lukasadam/gamache/actions/workflows/python-ci-cd.yml/badge.svg)](https://github.com/lukasadam/gamache/actions/workflows/python-ci-cd.yml)
-[![Coverage](https://codecov.io/gh/lukasadam/gamache/branch/develop/graph/badge.svg)](https://codecov.io/gh/lukasadam/gamache)
+[![codecov](https://codecov.io/gh/lukasadam/gamache/graph/badge.svg?token=079DFV3CXJ)](https://codecov.io/gh/lukasadam/gamache)
 [![Docs](https://img.shields.io/badge/docs-mkdocs--material-blue)](https://lukasadam.github.io/gamache/)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 [![Ruff](https://img.shields.io/badge/lint-ruff-1f6feb)](https://docs.astral.sh/ruff/)
