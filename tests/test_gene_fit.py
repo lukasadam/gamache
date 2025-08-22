@@ -14,11 +14,10 @@ def _fit_one_gene_model(adata, gene_name="g0", key="nbgam_scanpy_plot"):
     """Fit a model for a single gene (fast, minimal)."""
     m = PseudotimeGAM(
         adata=adata,
-        counts_layer="counts",
+        layer="counts",
         pseudotime_key="dpt_pseudotime",
         size_factors_key="size_factors",
         key=key,
-        backend="irls",
         nonfinite="error",
     )
     idx = int(np.where(adata.var_names == gene_name)[0][0])
