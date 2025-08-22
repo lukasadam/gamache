@@ -7,12 +7,10 @@ help:
 	@echo "  make test           # run pytest"
 	@echo "  make lint           # ruff/black/isort checks"
 	@echo "  make format         # apply ruff/black/isort fixes"
-	@echo "  make types          # mypy"
 	@echo "  make precommit      # run hooks on all files"
 	@echo "  make docs           # build docs (if mkdocs present)"
 	@echo "  make docs-serve     # serve docs locally"
 	@echo "  make clean          # remove caches and build artifacts"
-	@echo "  make dataio         # install dataio dependencies"
 
 bootstrap:
 	./scripts/bootstrap.sh --with-docs auto
@@ -36,16 +34,11 @@ format:
 	uv run black .
 	uv run isort .
 
-types:
-	uv run mypy --strict --install-types --non-interactive .
-
 precommit:
 	uv pip install pre-commit
 	uv run pre-commit install
 	uv run pre-commit run --all-files
 
-dataio:
-	uv pip install -e '.[dataio]'
 docs:
 	uv pip install -e '.[docs]'
 	uv run mkdocs build --strict

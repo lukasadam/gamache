@@ -27,43 +27,44 @@ Gamache aims to fill this gap by providing a **lightweight, tradeSeq-style workf
 - Association testing along pseudotime / trajectories
 - Plotting helpers
 
-## Project Status 🚧
+## Project Status
 
-**Gamache is under active development.**
-The fitting functionality is not yet reliable, and results (e.g. association testing) should not be considered stable.
-APIs may change without notice, and breaking changes are expected as the project evolves.
-
+🚧 **Gamache** is under active development. APIs may change without notice, and breaking changes are expected as the project evolves.
 Feedback and issues are very welcome at this stage!
 
 ## Installation
 
-Using **uv** (recommended):
+Using **uv** (recommended for speed):
 
 ```bash
-uv pip install -e .
+uv pip install git+https://github.com/lukasadam/gamache.git@main
 ```
 
 or plain pip:
 
 ```bash
-pip install -e .
+pip install git+https://github.com/lukasadam/gamache.git@main
 ```
 
-## Quickstart
+## ⚡ Quickstart
 
 ```python
 import numpy as np
 import scanpy as sc
 import gamache as gm
 
-adata = sc.read("paul15_endo.h5ad")
-adata = adata.raw.to_adata()
+# Fit NB-GAM
+model = gm.tl.fit_gam(adata)
 
-# Fit GAM
-model = gm.tl.fit_gam(adata, backend="irls")
+# Test association for each gene with pseudotime
+# H0: all smooth coefficients == 0
+results_df = model.test_all(test="association")
 
-# Perform association testing
-model.association_test(gene="Hba-a2")
+# Filter results to significant genes
+results_df = results_df[results_df["qvalue"] < 0.05].set_index("gene")
+
+# Plot fit for multiple genes as a heatmap
+gm.pl.plot_gene_heatmap(adata, list(results_df.index), model=model)
 ```
 
 ## Documentation
@@ -71,17 +72,25 @@ model.association_test(gene="Hba-a2")
 - User & API docs (MkDocs): **https://<ORG>.github.io/gamache/**
 - Notebooks: `docs/notebooks/` and `notebooks/`
 
-## Development
-
-```bash
-# The repo comes with all packages out of the box
-make bootstrap
-```
-
 ## Contributing
 
-Issues and PRs are welcome! Please run lint, tests, and update docs for user-facing changes.
+Contributions are very welcome! 🎉 You can help by reporting issues, improving documentation, or submitting pull requests.
 
-## License
+### Development Setup
+```bash
+# Run everything out of the box
+make bootstrap
 
-Add a LICENSE file (e.g., MIT) to clarify usage and contributions.
+# Run linting
+make lint
+
+# Run tests
+make test
+```
+
+### Pull Requests
+
+- Please keep PRs focused and small when possible.
+- Run lint tests before submitting.
+- Update documentation for any user-facing changes.
+- Include a clear description of what the change does and why it’s needed.
