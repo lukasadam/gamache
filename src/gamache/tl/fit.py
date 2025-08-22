@@ -220,15 +220,19 @@ class PseudotimeGAM:
         for j in idx:
             y = self._get_counts_col(j).astype(float)
 
+            fam = sm.families.NegativeBinomial(alpha=1.0)
             model = GLMGam(
                 y,
                 exog=exog_lin,
                 smoother=self.smoother,
-                family=sm.families.NegativeBinomial(alpha=1.0),
-                # uncomment if you want library-size normalization:
-                # offset=self.offset,
+                alpha=float(self.lam),
+                family=fam,
+                offset=self.offset,
             )
-            res = model.fit()
+
+            weights = self._obs_weight_mask if (self.nonfinite == "mask") else None
+            res = model.fit(weights=weights)
+
             self._results_[int(j)] = res
 
             k_lin = int(model.k_exog_linear)  # = 1
@@ -371,7 +375,7 @@ class PseudotimeGAM:
         y = self._get_counts_col(gene)
         mu_fit = self.fitted_values(gene)
         mu_null = np.full_like(y, fill_value=y.mean())  # null model = flat curve
-        alpha = self.adata.var[self.key + "_alpha"][gene]
+        alpha = float(self.adata.var[self.key + "_alpha"].iloc[gene])
 
         dev_resid = _neg_binom_deviance(y, mu_fit, alpha)
         dev_null = _neg_binom_deviance(y, mu_null, alpha)
@@ -506,7 +510,7 @@ class PseudotimeGAM:
             else int(np.where(self.adata.var_names == gene)[0][0])
         )
         y = self._get_counts_col(j).astype(float)
-        nb_alpha = float(self.adata.var[self.key + "_alpha"][j])
+        nb_alpha = float(self.adata.var[self.key + "_alpha"].iloc[j])
         fam = sm.families.NegativeBinomial(
             alpha=nb_alpha if np.isfinite(nb_alpha) and nb_alpha > 0 else self._alpha_mom(y)
         )
@@ -823,7 +827,7 @@ def fit_gam(
     size_factors_key: str = "size_factors",
     df: int = 6,
     degree: int = 3,
-    lam: float = 1.0,
+    lam: float = 0.01,
     include_intercept: bool = False,
     key: str = "nbgam1d",
     nonfinite: str = "error",

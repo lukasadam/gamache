@@ -122,19 +122,33 @@ def _neg_binom_deviance(y: np.ndarray, mu: np.ndarray, alpha: float) -> float:
     float
         The negative binomial deviance.
     """
-    # Clip mu to avoid log(0)
-    mu = np.clip(mu, 1e-8, None)
+    y = np.asarray(y, dtype=float)
+    mu = np.asarray(mu, dtype=float)
 
-    # Clip alpha to avoid blow-ups
-    alpha = max(alpha, 1e-8)
+    # sanitize inputs
+    alpha = float(max(alpha, 1e-12))
+    # Replace NaNs/±inf first, then clip
+    y = np.nan_to_num(y, nan=0.0, posinf=1e12, neginf=0.0)
+    mu = np.nan_to_num(mu, nan=1.0, posinf=1e12, neginf=1e-12)
 
-    # term1: y * log(y / mu), but define 0*log(0/mu) = 0
-    term1 = np.where(y > 0, y * np.log(y / mu), 0.0)
+    # ensure strictly positive mu, and keep everything finite
+    y = np.clip(y, 0.0, 1e12)
+    mu = np.clip(mu, 1e-12, 1e12)
 
-    # term2: (y + 1/alpha) * log((y + 1/alpha) / (mu + 1/alpha))
-    term2 = (y + 1 / alpha) * np.log((y + 1 / alpha) / (mu + 1 / alpha))
+    # term1: y * (log y - log mu), with 0*log(0) defined as 0
+    # (avoid log(0) by clipping y inside the log)
+    logy = np.log(np.clip(y, 1e-12, None))
+    logmu = np.log(mu)
+    term1 = np.where(y > 0.0, y * (logy - logmu), 0.0)
 
-    dev = 2 * np.sum(term1 - term2)
+    # term2: (y + 1/alpha) * [log(y + 1/alpha) - log(mu + 1/alpha)]
+    inva = 1.0 / alpha
+    num = y + inva
+    den = mu + inva
+    # num, den are strictly positive; still clip to avoid extreme logs
+    num = np.clip(num, 1e-12, 1e12)
+    den = np.clip(den, 1e-12, 1e12)
+    term2 = num * (np.log(num) - np.log(den))
 
-    # ensure nonnegative
+    dev = 2.0 * np.sum(term1 - term2)
     return float(max(dev, 0.0))
