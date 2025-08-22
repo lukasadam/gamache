@@ -218,7 +218,7 @@ def test_test_all_contrast_requires_vector(adata_small_pt):
 
 def test_deviance_explained_vector(adata_small_pt):
     m = PseudotimeGAM(adata_small_pt, key="nbgam_dev")
-    m.fit(genes=[0, 1, 2])
+    m.fit()
     de = m.deviance_explained()
     assert set(["g0", "g1", "g2"]).issubset(set(de.index))
     # Values should be finite; can be negative in principle, so just check finiteness
