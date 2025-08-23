@@ -20,7 +20,8 @@ dependencies = [
   "numpyro",
   "jax",
   "tqdm",
-  "statsmodels"
+  "statsmodels",
+  "mssm"
 ]
 
 [project.optional-dependencies]
