@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from .exp_fam import JAXGSMMFamily
+from .exp_fam import JAXGAMMFamily
 
 
-class Gaussian(JAXGSMMFamily):
+class Gaussian(JAXGAMMFamily):
     r"""Gaussian likelihood with identity mean link.
 
     This is a small compatibility family primarily intended for `GAMM.fit()`.
@@ -42,7 +42,7 @@ class Gaussian(JAXGSMMFamily):
         return -n * jnp.log(sigma) - 0.5 * jnp.sum((resid / sigma) ** 2)
 
 
-class Poisson(JAXGSMMFamily):
+class Poisson(JAXGAMMFamily):
     r"""Poisson GLM with log link (canonical).
 
     Model:
@@ -68,7 +68,7 @@ class Poisson(JAXGSMMFamily):
         return jnp.sum(y * eta - mu - gammaln(y + 1.0))
 
 
-class Binomial(JAXGSMMFamily):
+class Binomial(JAXGAMMFamily):
     r"""Bernoulli/Binomial GLM with logit link.
 
     This minimal family expects a binary response $y \in \{0, 1\}$.
@@ -92,7 +92,7 @@ class Binomial(JAXGSMMFamily):
         return jnp.sum(y * jnn.log_sigmoid(eta) + (1.0 - y) * jnn.log_sigmoid(-eta))
 
 
-class NegativeBinomial(JAXGSMMFamily):
+class NegativeBinomial(JAXGAMMFamily):
     r"""Negative Binomial GLM (NB2) with log link.
 
     Parameterization:

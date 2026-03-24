@@ -6,7 +6,7 @@ import numpy as np
 import scipy as scp
 
 from .families import Binomial, Gaussian, NegativeBinomial, Poisson
-from .exp_fam import GSMMFamily
+from .exp_fam import GAMMFamily
 from .formula import Formula, f, fs, i, l, lhs
 
 __all__ = [
@@ -37,7 +37,7 @@ class GAMM:
     def __init__(
         self,
         formula: Formula | str,
-        family: GSMMFamily | str | None = None,
+        family: GAMMFamily | str | None = None,
         *,
         data: Any | None = None,
         progress_bar: bool = False,

@@ -98,7 +98,7 @@ def _dense_curve(model, gene, n_grid=200):
     y_grid : np.ndarray
         Predicted response values on the dense grid.
     """
-    t_obs = np.asarray(model.t_filled, float)
+    t_obs = np.asarray(model.t, float)
     lo, hi = np.nanmin(t_obs), np.nanmax(t_obs)
     t_grid = np.linspace(lo, hi, n_grid)
     y_grid = model.predict(gene, t_new=t_grid)  # response scale

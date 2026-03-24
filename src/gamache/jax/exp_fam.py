@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Exponential-family utilities.
+
+This file intentionally contains both the base family and the JAX-autodiff
+specialization to keep the core API browseable without hopping across multiple
+small modules.
+"""
+
 from collections.abc import Callable
 from typing import Any
 
@@ -9,46 +16,14 @@ import scipy as scp
 from .jax_autodiff import as_numpy_1d, jax_is_available, jax_is_requested, to_jax_array, to_jax_mat
 
 
-class Link:
-    """Link function base class."""
+class GAMMFamily:
+    """Minimal base class for GAMM-style likelihoods with optional JAX autodiff.
 
-    def f(self, mu: np.ndarray) -> np.ndarray:  # pragma: no cover
-        raise NotImplementedError
-
-    def fi(self, eta: np.ndarray) -> np.ndarray:  # pragma: no cover
-        raise NotImplementedError
-
-    def dy1(self, mu: np.ndarray) -> np.ndarray:  # pragma: no cover
-        raise NotImplementedError
-
-    def dy2(self, mu: np.ndarray) -> np.ndarray:  # pragma: no cover
-        raise NotImplementedError
-
-
-class Identity(Link):
-    r"""Identity link: $\eta = \mu$."""
-
-    def f(self, mu: np.ndarray) -> np.ndarray:
-        return mu
-
-    def fi(self, eta: np.ndarray) -> np.ndarray:
-        return eta
-
-    def dy1(self, mu: np.ndarray) -> np.ndarray:
-        return np.ones_like(mu)
-
-    def dy2(self, mu: np.ndarray) -> np.ndarray:
-        return np.zeros_like(mu)
-
-
-class GSMMFamily:
-    """Minimal base class for GSMM-style likelihoods with optional JAX autodiff.
-
-    This is a pruned version of MSSM's original GSMMFamily, keeping only what is
-    needed for JAX-first gradient/Hessian computation and the PropHaz example.
+    This is a pruned version of the upstream project's family base class,
+    keeping only what is needed for JAX-first gradient/Hessian computation.
     """
 
-    def __init__(self, pars: int, links: list[Link], *llkargs: Any) -> None:
+    def __init__(self, pars: int, links: list[Any], *llkargs: Any) -> None:
         self.n_par = int(pars)
         self.links = links
         self.llkargs = llkargs
@@ -86,7 +61,7 @@ class GSMMFamily:
             return False
         if not jax_is_available():
             return False
-        return type(self).llk_jax is not GSMMFamily.llk_jax
+        return type(self).llk_jax is not GAMMFamily.llk_jax
 
     def _jax_prepare(
         self,
@@ -221,9 +196,10 @@ class GSMMFamily:
 
         for j in np.asarray(jcols, dtype=int).reshape(-1):
 
-            def __d2llkj(r: float) -> np.ndarray:
+            def __d2llkj(r: np.ndarray) -> np.ndarray:
+                r0 = float(np.asarray(r).reshape(()))
                 n_coef = np.array(coef, copy=True)
-                n_coef[j] = r
+                n_coef[j] = r0
                 n_grad = self.gradient(n_coef, coef_split_idx, ys, Xs)
                 return np.asarray(n_grad).reshape(-1)
 
@@ -276,10 +252,10 @@ class GSMMFamily:
         return None
 
 
-class JAXGSMMFamily(GSMMFamily):
-    """Convenience base class for JAX-traceable GSMM families."""
+class JAXGAMMFamily(GAMMFamily):
+    """Convenience base class for JAX-traceable families."""
 
-    def __init__(self, pars: int, links: list[Link], *llkargs: Any) -> None:
+    def __init__(self, pars: int, links: list[Any], *llkargs: Any) -> None:
         super().__init__(pars, links, *llkargs)
         self.use_jax_autodiff = True
 
@@ -292,7 +268,7 @@ class JAXGSMMFamily(GSMMFamily):
     ) -> float:
         if not jax_is_available():
             raise RuntimeError(
-                "JAXGSMMFamily requires JAX installed to evaluate llk via llk_jax."
+                "JAXGAMMFamily requires JAX installed to evaluate llk via llk_jax."
             )
 
         coef_split_idx_t, ys_jax, Xs_jax = self._jax_prepare(coef_split_idx, ys, Xs)
@@ -301,143 +277,14 @@ class JAXGSMMFamily(GSMMFamily):
         return float(np.asarray(val))
 
 
-class PropHaz(GSMMFamily):
-    """Proportional hazards family (WPS 2016) with analytic and JAX-traceable likelihood."""
+# Backwards-compatible aliases.
+GSMMFamily = GAMMFamily
+JAXGSMMFamily = JAXGAMMFamily
 
-    def __init__(self, ut: np.ndarray, r: np.ndarray):
-        super().__init__(1, [Identity()], np.asarray(ut), np.asarray(r))
 
-    def llk(
-        self,
-        coef: np.ndarray,
-        coef_split_idx: list[int],
-        ys: list[np.ndarray],
-        Xs: list[scp.sparse.spmatrix | scp.sparse.sparray],
-    ) -> float:
-        delta = np.asarray(ys[0]).reshape(-1, 1)
-        ut = np.asarray(self.llkargs[0])
-        r = np.asarray(self.llkargs[1])
-        nt = int(len(ut))
-
-        X = Xs[0]
-        eta = X @ coef
-        gamma = np.exp(eta)
-
-        llk = float(np.sum(delta * eta))
-
-        gamma_p = 0.0
-        for j in range(nt):
-            ri = r == j
-            dj = float(np.sum(delta[ri]))
-            gamma_p += float(np.sum(gamma[ri]))
-            llk -= dj * float(np.log(gamma_p))
-
-        return float(llk)
-
-    def llk_jax(
-        self,
-        coef: Any,
-        coef_split_idx: tuple[int, ...],
-        ys: tuple[Any, ...],
-        Xs: tuple[Any, ...],
-    ) -> Any:
-        import jax.numpy as jnp  # type: ignore
-
-        delta = ys[0].reshape(-1)
-        X = Xs[0]
-        coef = jnp.asarray(coef).reshape(-1)
-
-        eta = X @ coef
-        gamma = jnp.exp(eta)
-
-        llk = jnp.sum(delta * eta)
-
-        r = jnp.asarray(self.llkargs[1]).reshape(-1).astype(jnp.int32)
-        nt = int(len(self.llkargs[0]))
-
-        dj = jnp.bincount(r, weights=delta, length=nt)
-        sj = jnp.bincount(r, weights=gamma, length=nt)
-        gamma_p = jnp.cumsum(sj)
-
-        tiny = jnp.finfo(gamma_p.dtype).tiny
-        llk = llk - jnp.sum(dj * jnp.log(jnp.maximum(gamma_p, tiny)))
-        return llk
-
-    def gradient(
-        self,
-        coef: np.ndarray,
-        coef_split_idx: list[int],
-        ys: list[np.ndarray],
-        Xs: list[scp.sparse.spmatrix | scp.sparse.sparray],
-    ) -> np.ndarray:
-        if self._can_use_jax():
-            return super().gradient(coef, coef_split_idx, ys, Xs)
-
-        delta = np.asarray(ys[0]).reshape(-1, 1)
-        ut = np.asarray(self.llkargs[0])
-        r = np.asarray(self.llkargs[1])
-        nt = int(len(ut))
-
-        X = Xs[0]
-        eta = X @ coef
-        gamma = np.exp(eta).reshape(-1, 1)
-
-        g = (delta.T @ X).astype(float)
-        b_p = np.zeros_like(g)
-
-        gamma_p = 0.0
-        for j in range(nt):
-            ri = r == j
-            dj = float(np.sum(delta[ri]))
-            gamma_i = gamma[ri, 0].reshape(-1, 1)
-            gamma_p += float(np.sum(gamma_i))
-
-            X_i = X[ri, :]
-            bi = gamma_i.T @ X_i
-            b_p += bi
-
-            g -= dj * (b_p / gamma_p)
-
-        return np.asarray(g).reshape(-1, 1)
-
-    def hessian(
-        self,
-        coef: np.ndarray,
-        coef_split_idx: list[int],
-        ys: list[np.ndarray],
-        Xs: list[scp.sparse.spmatrix | scp.sparse.sparray],
-    ) -> scp.sparse.csc_array:
-        if self._can_use_jax():
-            return super().hessian(coef, coef_split_idx, ys, Xs)
-
-        delta = np.asarray(ys[0]).reshape(-1, 1)
-        ut = np.asarray(self.llkargs[0])
-        r = np.asarray(self.llkargs[1])
-        nt = int(len(ut))
-
-        X = Xs[0]
-        eta = X @ coef
-        gamma = np.exp(eta).reshape(-1, 1)
-
-        b_p = np.zeros((1, X.shape[1]), dtype=float)
-        gamma_p = 0.0
-        A_p = scp.sparse.csc_array((X.shape[1], X.shape[1]))
-        H = scp.sparse.csc_array((X.shape[1], X.shape[1]))
-
-        for j in range(nt):
-            ri = r == j
-            dj = float(np.sum(delta[ri]))
-            gamma_i = gamma[ri, 0].reshape(-1, 1)
-            gamma_p += float(np.sum(gamma_i))
-
-            X_i = X[ri, :]
-            bi = gamma_i.T @ X_i
-            b_p += bi
-
-            A_i = (gamma_i * X_i).T @ X_i
-            A_p += A_i
-
-            Hj = dj * (b_p.T @ b_p) / (gamma_p**2) - dj * (A_p / gamma_p)
-            H += Hj
-
-        return scp.sparse.csc_array(H)
+__all__ = [
+    "GAMMFamily",
+    "JAXGAMMFamily",
+    "GSMMFamily",
+    "JAXGSMMFamily",
+]
