@@ -1,54 +1,84 @@
-"""Functionality to fit a single-trajectory Negative Binomial Generalized Additive Model (NB-GAM) to pseudotime data."""
+"""Fit a single-trajectory Negative Binomial GAM to pseudotime data.
+
+This module provides Gamache's *frontend* API (AnnData-centric, tradeSeq-like)
+while using the copied `jaxgamx` backend for coefficient fitting.
+
+Design goals
+------------
+- Keep the public API stable: `PseudotimeGAM(...).fit()`, `fit_gam(...)`,
+    `test_all(...)`, plotting helpers, etc.
+- Keep the backend JAX implementation exactly as in `jaxgamx` (vendored into
+- Keep the backend JAX implementation exactly as in `jaxgamx` (vendored into
+    `gamache/src/gamache/jax`). This file only builds the basis and calls into
+    `gamache.jax.models.GAMM.fit(...)`.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Sequence, Union
+from typing import Any, Dict, Optional, Sequence, Union
 
 import anndata as ad
 import numpy as np
 import pandas as pd
-import statsmodels.api as sm
 from scipy import sparse
 from scipy.stats import chi2
-from statsmodels.gam.api import BSplines, GLMGam
 
-from .utils import (
-    _bh_fdr,
-    _center_of_mass,
-    _dense_curve,
-    _neg_binom_deviance,
-    _peak_time,
-)
+from .utils import _bh_fdr, _center_of_mass, _dense_curve, _neg_binom_deviance, _peak_time
+
+from .. import jax as jaxgamx
 
 
 @dataclass
 class PseudotimeGAM:
-    """Model to fit a single-trajectory Negative Binomial Generalized Additive Model (NB-GAM) to pseudotime data."""
+    """Pseudotime NB-GAM with a JAX backend.
+
+    This keeps Gamache's public API while delegating coefficient fitting to
+    `jaxgamx.models.GAMM`.
+
+    Notes
+    -----
+    - The JAX backend currently fits an NB2 model without a library-size offset.
+      We keep `size_factors_key` for API compatibility but do not apply it.
+    - Spline *penalization* is approximated via a ridge term (`lam`) used when
+      forming the working-weight covariance; the coefficient fit itself is done
+      by the `jaxgamx` IRLS solver, which also supports `ridge`.
+    """
 
     # config / inputs
     adata: ad.AnnData = field(repr=False)
     layer: Optional[str] = "counts"
     pseudotime_key: str = "dpt_pseudotime"
-    size_factors_key: str = "size_factors"
+    size_factors_key: str = "size_factors"  # kept for compatibility; unused
     df: int = 6
     degree: int = 3
     lam: float = 1.0
     include_intercept: bool = False
+    covariates: Optional[Sequence[str]] = None
     key: str = "nbgam1d"
     nonfinite: str = "error"  # "error" | "mask" | "median"
-    nb_alpha: Optional[float] = None  # if None, estimate per gene via method-of-moments
+    nb_alpha: Optional[float] = None  # kept for compatibility; ignored by backend
 
-    # derived (built in __post_init__)
+    # NB2 parameterization in jaxgamx: Var(y) = mu + mu^2/theta
+    theta: float = 10.0
+    irls_maxiter: int = 25
+    ridge: float = 1e-8
+
+    # derived
     t: np.ndarray = field(init=False, repr=False)
     t_filled: np.ndarray = field(init=False, repr=False)
     _obs_weight_mask: np.ndarray = field(init=False, repr=False)
-    sf: np.ndarray = field(init=False, repr=False)
-    offset: np.ndarray = field(init=False, repr=False)
-    smoother: BSplines = field(init=False, repr=False)
-    X: np.ndarray = field(init=False, repr=False)  # (n, p) spline design used by statsmodels
+
+    _pt_sanitized_key: str = field(init=False, repr=False)
+    _formula: Any = field(init=False, repr=False)
+    _covariate_defaults: dict[str, Any] = field(init=False, repr=False)
+
+    X: np.ndarray = field(init=False, repr=False)
     p: int = field(init=False)
     _layer: Optional[str] = field(init=False, repr=False)
+    _fit_mask: np.ndarray = field(init=False, repr=False)
+    _tmin: float = field(init=False, repr=False)
+    _tmax: float = field(init=False, repr=False)
 
     # ----------------------- construction -----------------------
     def __post_init__(self) -> None:
@@ -92,36 +122,66 @@ class PseudotimeGAM:
         self.t_filled = t_clean
         self._obs_weight_mask = mask_w
 
-        # size factors & offset
-        if self.size_factors_key in self.adata.obs:
-            sf = self.adata.obs[self.size_factors_key].to_numpy(dtype=float)
-        else:
-            if "n_counts" in self.adata.obs:
-                sf = self.adata.obs["n_counts"].to_numpy(dtype=float)
-            else:
-                Xmat = (
-                    self.adata.layers[self.layer]
-                    if self.layer
-                    and (self.adata.layers is not None)
-                    and (self.layer in self.adata.layers)
-                    else self.adata.X
-                )
-                sf = np.asarray(Xmat.sum(axis=1)).ravel().astype(float)
-        self.sf = sf / np.median(np.clip(sf, 1e-12, None))
-        self.offset = np.log(self.sf + 1e-12)
+        # store sanitized pseudotime under an internal key used by the backend formula
+        self._pt_sanitized_key = f"__gm_{self.key}_pt"
+        self.adata.obs[self._pt_sanitized_key] = np.asarray(self.t_filled, dtype=float)
 
-        # B-spline basis
-        self.smoother = BSplines(
-            self.t_filled[:, None],
-            df=[int(self.df)],
-            degree=[int(self.degree)],
-            include_intercept=bool(self.include_intercept),
+        # covariate defaults used for predictions when only t_new is supplied
+        covs = [] if self.covariates is None else [str(c) for c in self.covariates]
+        for c in covs:
+            if c not in self.adata.obs:
+                raise ValueError(f"Covariate {c!r} not found in adata.obs")
+        self._covariate_defaults = {}
+        for c in covs:
+            v = self.adata.obs[c]
+            arr = np.asarray(v)
+            if arr.dtype.kind in {"i", "u", "f"}:
+                x = np.asarray(arr, dtype=float)
+                m = np.isfinite(x)
+                self._covariate_defaults[c] = float(np.median(x[m])) if np.any(m) else 0.0
+            else:
+                # factor-like: pick a stable default level
+                vv = np.asarray(v.astype(object))
+                # first non-null-ish value if possible
+                val = None
+                for item in vv.reshape(-1):
+                    if item is None:
+                        continue
+                    s = str(item)
+                    if s != "nan":
+                        val = s
+                        break
+                self._covariate_defaults[c] = "" if val is None else val
+
+        # Build design matrix using the vendored JAX formula implementation.
+        terms: list[Any] = []
+        if self.include_intercept:
+            terms.append(jaxgamx.models.i())
+        if covs:
+            terms.append(jaxgamx.models.l(covs))
+        terms.append(
+            jaxgamx.models.f([self._pt_sanitized_key], nk=int(self.df), degree=int(self.degree))
         )
-        self.X = np.asarray(self.smoother.basis)  # (n, p)
+
+        self._formula = jaxgamx.models.Formula(
+            lhs=jaxgamx.models.lhs("y"),
+            terms=terms,
+            data=self.adata,
+        )
+
+        self.X = np.asarray(self._formula.Xs[0].todense(), dtype=float)
         if not np.isfinite(self.X).all():
-            raise ValueError("B-spline basis contains non-finite values after sanitization.")
-        self.p = int(self.smoother.dim_basis)
+            raise ValueError("Design matrix contains non-finite values after sanitization.")
+
+        self.p = int(self.X.shape[1])
         self._layer = self.layer
+
+        # mask used for fitting when nonfinite='mask'
+        self._fit_mask = self._obs_weight_mask == 1.0
+
+        # training-time range for safe BSplines.transform clamping
+        self._tmin = float(np.min(self.t_filled))
+        self._tmax = float(np.max(self.t_filled))
 
         # metadata
         meta_basis = {
@@ -136,27 +196,18 @@ class PseudotimeGAM:
             "pseudotime_key": self.pseudotime_key,
             "size_factors_key": self.size_factors_key,
             "layer": self.layer,
+            "covariates": covs,
             "basis": meta_basis,
             "lambda": float(self.lam),
             "nonfinite": self.nonfinite,
-            "backend": "statsmodels_glmgam",
+            "backend": "jaxgamx",
+            "theta": float(self.theta),
         }
 
     # ----------------------- fitting & prediction -----------------------
     @staticmethod
     def _alpha_mom(y: np.ndarray) -> float:
-        """Method-of-moments NB2 dispersion (alpha) with floor.
-
-        Parameters
-        ----------
-        y
-            (n,) array of counts for a single gene
-
-        Returns
-        -------
-        alpha
-            estimated dispersion parameter (≥ 1e-10)
-        """
+        """Compatibility helper: method-of-moments NB2 dispersion (alpha)."""
         m = float(np.mean(y))
         v = float(np.var(y, ddof=1)) if y.size > 1 else 0.0
         if m <= 0.0:
@@ -182,19 +233,9 @@ class PseudotimeGAM:
 
         Notes
         -----
-        This method uses the implementation from statsmodels to fit a penalized weighted least squares model
-        for each gene. The results are stored in the AnnData object under the specified keys.
+        This method uses the `jaxgamx` backend to fit coefficients per gene.
         """
         adata = self.adata
-
-        # build smoother on training pseudotime
-        x = np.asarray(self.t_filled, float)
-        self._tmin, self._tmax = float(np.min(x)), float(np.max(x))
-        self.smoother = BSplines(x[:, None], df=[int(self.df)], degree=[int(self.degree)])
-
-        n = x.size
-        p = int(self.smoother.dim_basis)
-        exog_lin = np.ones((n, 1))  # intercept
 
         # gene indices
         if genes is None:
@@ -208,55 +249,57 @@ class PseudotimeGAM:
                 dtype=int,
             )
 
-        # outputs
-        coef_mat = np.full((adata.n_vars, p), np.nan, float)
+        fam = jaxgamx.families.NegativeBinomial(theta=float(self.theta))
+        model = jaxgamx.models.GAMM(self._formula, fam)
+
+        obs_mask = self._fit_mask if self.nonfinite == "mask" else None
+
+        # Fit via jaxgamx's batched IRLS path; coefficients are stored in adata.varm
+        model.fit(
+            adata=adata,
+            obs_mask=obs_mask,
+            layer=self.layer,
+            genes=[str(adata.var_names[i]) for i in idx],
+            store_key=self.key,
+            ridge=float(self.lam) + float(self.ridge),
+            irls_maxiter=int(self.irls_maxiter),
+        )
+
+        # jaxgamx writes (n_vars, p_design) into varm[f"{key}_coef"]. We also populate
+        # a compatibility alpha/edf/diagnostics and an approximate covariance if requested.
+        coef_mat = np.asarray(adata.varm[self.key + "_coef"], float)
+        if coef_mat.shape[1] != self.p:
+            raise RuntimeError("Internal error: coef matrix has unexpected shape")
+
         edf_vec = np.full(adata.n_vars, np.nan, float)
-        alpha_vec = np.full(adata.n_vars, 1.0, float)  # fixed NB alpha
-        cov_stack = np.full((adata.n_vars, p, p), np.nan, float) if store_cov else None
+        edf_vec[idx] = float(self.p)
+        alpha_val = float(1.0 / float(self.theta))
+        alpha_vec = np.full(adata.n_vars, np.nan, float)
+        alpha_vec[idx] = alpha_val
         diagnostic_vec = np.full(adata.n_vars, np.nan, float)
+        diagnostic_vec[idx] = 1.0
 
-        self._results_ = {}
-
-        for j in idx:
-            y = self._get_counts_col(j).astype(float)
-
-            fam = sm.families.NegativeBinomial(alpha=1.0)
-            model = GLMGam(
-                y,
-                exog=exog_lin,
-                smoother=self.smoother,
-                alpha=float(self.lam),
-                family=fam,
-                offset=self.offset,
-            )
-
-            weights = self._obs_weight_mask if (self.nonfinite == "mask") else None
-            res = model.fit(weights=weights)
-
-            self._results_[int(j)] = res
-
-            k_lin = int(model.k_exog_linear)  # = 1
-            params = np.asarray(res.params)
-            coef_mat[j] = params[k_lin : k_lin + p]
-
-            try:
-                edf_vec[j] = float(np.nansum(np.asarray(res.edf)[k_lin : k_lin + p]))
-            except Exception:
-                edf_vec[j] = np.nan
-
-            if store_cov:
-                C = np.asarray(res.cov_params())
-                cov_stack[j] = C[k_lin : k_lin + p, k_lin : k_lin + p]
-
-            diagnostic_vec[j] = float(np.isfinite(res.fittedvalues).all())
-
-        # write back
-        adata.varm[self.key + "_coef"] = coef_mat
         adata.var[self.key + "_edf"] = edf_vec
         adata.var[self.key + "_alpha"] = alpha_vec
-        if store_cov and cov_stack is not None:
-            adata.varm[self.key + "_cov"] = cov_stack
         adata.var[self.key + "_diagnostics"] = diagnostic_vec
+
+        if store_cov:
+            cov_stack = np.full((adata.n_vars, self.p, self.p), np.nan, float)
+            X_fit = self.X[self._fit_mask]
+            ridge = float(self.lam) + float(self.ridge)
+            for j in idx:
+                beta = coef_mat[int(j)]
+                eta = X_fit @ beta
+                mu = np.exp(np.clip(eta, -50.0, 50.0))
+                alpha = alpha_val
+                w = mu / (1.0 + alpha * mu)
+                XtWX = X_fit.T @ (X_fit * w[:, None]) + ridge * np.eye(self.p)
+                try:
+                    cov = np.linalg.inv(XtWX)
+                except np.linalg.LinAlgError:
+                    cov = np.linalg.pinv(XtWX)
+                cov_stack[int(j)] = cov
+            adata.varm[self.key + "_cov"] = cov_stack
 
     def fitted_values(
         self, gene: Union[str, int], *, type: str = "response", keep_nan: bool = True
@@ -278,8 +321,8 @@ class PseudotimeGAM:
             The fitted values for the specified gene at the training pseudotime.
         """
         beta = self._get_beta(gene)
-        eta = self.offset + self.X @ beta
-        out = eta if type == "link" else np.exp(eta)
+        eta = self.X @ beta
+        out = eta if type == "link" else np.exp(np.clip(eta, -50.0, 50.0))
         if keep_nan and np.any(self._obs_weight_mask == 0.0):
             out = out.copy()
             out[self._obs_weight_mask == 0.0] = np.nan
@@ -289,6 +332,7 @@ class PseudotimeGAM:
         self,
         gene: Union[str, int],
         t_new: Optional[np.ndarray] = None,
+        obs_new: Optional[pd.DataFrame] = None,
         *,
         return_ci: bool = False,
     ) -> Union[np.ndarray, tuple[np.ndarray, np.ndarray, np.ndarray]]:
@@ -308,46 +352,70 @@ class PseudotimeGAM:
         np.ndarray
             The predicted mean (and optional CI) for the specified gene at the new time points.
         """
-        # resolve gene index
-        j = (
-            gene
-            if isinstance(gene, (int, np.integer))
-            else int(np.where(self.adata.var_names == gene)[0][0])
-        )
-        if not hasattr(self, "_results_") or int(j) not in self._results_:
-            raise RuntimeError("No fitted model for this gene. Call .fit() first.")
+        # ensure fitted
+        try:
+            _ = self._get_beta(gene)
+        except Exception as e:
+            raise RuntimeError("No fitted model for this gene. Call .fit() first.") from e
 
-        res = self._results_[int(j)]
+        covs = [] if self.covariates is None else [str(c) for c in self.covariates]
 
-        # default to training times
-        x_new = np.asarray(self.t_filled if t_new is None else t_new, float)
+        # default to training design matrix
+        if t_new is None and obs_new is None:
+            B = self.X
+            eta = B @ self._get_beta(gene)
+            mean = np.exp(np.clip(eta, -50.0, 50.0))
+            if not return_ci:
+                return mean
+            _, cov = self._get_beta_cov(gene)
+            var_eta = np.einsum("ij,jk,ik->i", B, cov, B)
+            se_eta = np.sqrt(np.clip(var_eta, 0.0, np.inf))
+            z = 1.959963984540054
+            lower = np.exp(np.clip(eta - z * se_eta, -50.0, 50.0))
+            upper = np.exp(np.clip(eta + z * se_eta, -50.0, 50.0))
+            return mean, lower, upper
 
-        # handle non-finite
+        # build a prediction frame
+        if t_new is None:
+            if obs_new is None:
+                raise ValueError("Provide either t_new or obs_new.")
+            x_new = np.asarray(obs_new.get(self.pseudotime_key, np.nan), dtype=float).reshape(-1)
+        else:
+            x_new = np.asarray(t_new, dtype=float).reshape(-1)
+
         finite = np.isfinite(x_new)
         if not finite.any():
             raise ValueError("t_new contains no finite values.")
         t_med = float(np.median(x_new[finite]))
         x_new = np.where(finite, x_new, t_med)
+        # clamp to training range for stable extrapolation
+        x_new = np.clip(x_new, float(self._tmin), float(self._tmax))
 
-        # clamp strictly inside [tmin, tmax] to satisfy BSplines.transform
-        tmin, tmax = float(self._tmin), float(self._tmax)
-        # nudge to open interval to be extra safe
-        left = np.nextafter(tmin, np.inf)
-        right = np.nextafter(tmax, -np.inf)
-        x_new = np.clip(x_new, left, right)
+        if obs_new is None:
+            frame = pd.DataFrame({self._pt_sanitized_key: x_new})
+        else:
+            frame = obs_new.copy()
+            frame[self._pt_sanitized_key] = x_new
 
-        exog_lin = np.ones((x_new.size, 1))
-        exog_spl = x_new[:, None]
+        for c in covs:
+            if c not in frame:
+                frame[c] = self._covariate_defaults.get(c, 0.0)
 
-        pred = res.get_prediction(exog=exog_lin, exog_smooth=exog_spl)
-        sf = pred.summary_frame()  # mean, mean_se, mean_ci_lower, mean_ci_upper
+        _y, B, _notNA, *_rest = self._formula.encode_data(frame, prediction=True)
+        B = np.asarray(B, dtype=float)
+        beta = self._get_beta(gene)
+        eta = B @ beta
+        mean = np.exp(np.clip(eta, -50.0, 50.0))
+        if not return_ci:
+            return mean
 
-        mean = np.asarray(sf["mean"], float)
-        if return_ci:
-            lower = np.asarray(sf["mean_ci_lower"], float)
-            upper = np.asarray(sf["mean_ci_upper"], float)
-            return mean, lower, upper
-        return mean
+        _, cov = self._get_beta_cov(gene)
+        var_eta = np.einsum("ij,jk,ik->i", B, cov, B)
+        se_eta = np.sqrt(np.clip(var_eta, 0.0, np.inf))
+        z = 1.959963984540054
+        lower = np.exp(np.clip(eta - z * se_eta, -50.0, 50.0))
+        upper = np.exp(np.clip(eta + z * se_eta, -50.0, 50.0))
+        return mean, lower, upper
 
     # ----------------------- model quality -----------------------
     def _deviance_explained(self, gene: str) -> float:
@@ -452,7 +520,7 @@ class PseudotimeGAM:
         return beta
 
     def _basis_row(self, t: float) -> np.ndarray:
-        """Get B-spline basis row for a single time point `t`.
+        """Get design-matrix row for a single pseudotime value `t`.
 
         Parameters
         ----------
@@ -464,68 +532,49 @@ class PseudotimeGAM:
         np.ndarray
             The B-spline basis row for the specified time point.
         """
-        x = np.asarray([t], dtype=float)
-        finite = np.isfinite(x)
-        if finite.sum() == 0:
+        x = np.asarray([t], dtype=float).reshape(-1)
+        if not np.isfinite(x).any():
             raise ValueError("Provided t is non-finite.")
-        # sanitize like training
-        t_med = float(np.median(self.t_filled))
-        x = np.where(finite, x, t_med)
-        lo, hi = np.quantile(self.t_filled, [0.001, 0.999])
-        if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
-            x = np.clip(x, lo, hi)
-        B = np.asarray(self.smoother.transform(x[:, None]))
-        return B.ravel()  # (p,)
+        x = np.clip(np.where(np.isfinite(x), x, float(np.median(self.t_filled))), self._tmin, self._tmax)
+
+        covs = [] if self.covariates is None else [str(c) for c in self.covariates]
+        frame = pd.DataFrame({self._pt_sanitized_key: x})
+        for c in covs:
+            frame[c] = self._covariate_defaults.get(c, 0.0)
+
+        _y, B, _notNA, *_rest = self._formula.encode_data(frame, prediction=True)
+        return np.asarray(B, dtype=float).reshape(-1)
 
     def _get_beta_cov(self, gene: Union[str, int]) -> tuple[np.ndarray, np.ndarray]:
-        """Return (beta, cov) for Wald tests. If cov not stored, refit quickly for that gene.
+        """Return (beta, cov) for Wald tests.
 
-        Parameters
-        ----------
-        gene : Union[str, int]
-            The gene to get fitted coefficients and covariance for.
-
-        Returns
-        -------
-        tuple[np.ndarray, np.ndarray]
-            The fitted coefficients and covariance matrix for the specified gene.
+        If covariance is not stored, compute a working-weight approximation at
+        the fitted mean.
         """
         beta = self._get_beta(gene)
         cov_key = self.key + "_cov"
-        if cov_key in self.adata.varm:
-            cov_stack = self.adata.varm[cov_key]
-            j = (
-                gene
-                if isinstance(gene, (int, np.integer))
-                else int(np.where(self.adata.var_names == gene)[0][0])
-            )
-            cov = cov_stack[j]
-            if np.isfinite(cov).all():
-                return beta, cov
-
-        # fallback: refit just this gene to get covariance
         j = (
             gene
             if isinstance(gene, (int, np.integer))
             else int(np.where(self.adata.var_names == gene)[0][0])
         )
-        y = self._get_counts_col(j).astype(float)
-        nb_alpha = float(self.adata.var[self.key + "_alpha"].iloc[j])
-        fam = sm.families.NegativeBinomial(
-            alpha=nb_alpha if np.isfinite(nb_alpha) and nb_alpha > 0 else self._alpha_mom(y)
-        )
-        mod = GLMGam(
-            y,
-            exog=None,
-            smoother=self.smoother,
-            alpha=float(self.lam),
-            family=fam,
-            offset=self.offset,
-        )
-        weights = self._obs_weight_mask if (self.nonfinite == "mask") else None
-        res = mod.fit(weights=weights)
-        C = np.asarray(res.cov_params())[: self.p, : self.p]
-        return beta, C
+        if cov_key in self.adata.varm:
+            cov = np.asarray(self.adata.varm[cov_key][int(j)], float)
+            if np.isfinite(cov).all():
+                return beta, cov
+
+        X_fit = self.X[self._fit_mask]
+        eta = X_fit @ beta
+        mu = np.exp(np.clip(eta, -50.0, 50.0))
+        alpha = float(1.0 / float(self.theta))
+        w = mu / (1.0 + alpha * mu)
+        ridge = float(self.lam) + float(self.ridge)
+        XtWX = X_fit.T @ (X_fit * w[:, None]) + ridge * np.eye(self.p)
+        try:
+            cov = np.linalg.inv(XtWX)
+        except np.linalg.LinAlgError:
+            cov = np.linalg.pinv(XtWX)
+        return beta, cov
 
     # --------- public Wald tests ---------
 
@@ -829,11 +878,12 @@ def fit_gam(
     degree: int = 3,
     lam: float = 0.01,
     include_intercept: bool = False,
+    covariates: Optional[Sequence[str]] = None,
     key: str = "nbgam1d",
     nonfinite: str = "error",
     nb_alpha: Optional[float] = None,
 ) -> PseudotimeGAM:
-    """Fit a PseudotimeGAM model to the given AnnData using statsmodels GLMGam."""
+    """Fit a PseudotimeGAM model to the given AnnData using the JAX backend."""
     model = PseudotimeGAM(
         adata=adata,
         layer=layer,
@@ -843,6 +893,7 @@ def fit_gam(
         degree=degree,
         lam=lam,
         include_intercept=include_intercept,
+        covariates=covariates,
         key=key,
         nonfinite=nonfinite,
         nb_alpha=nb_alpha,

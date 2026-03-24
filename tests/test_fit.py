@@ -30,7 +30,7 @@ def test_init_sets_design_and_metadata(adata_small_pt):
     assert meta["pseudotime_key"] == "dpt_pseudotime"
     assert meta["lambda"] == 0.5
     assert meta["basis"]["p"] == m.p
-    assert meta["backend"] == "statsmodels_glmgam"
+    assert meta["backend"] == "jaxgamx"
     assert meta["nonfinite"] == "error"
 
 
