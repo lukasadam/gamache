@@ -30,7 +30,7 @@ def test_init_sets_design_and_metadata(adata_small_pt):
     assert meta["pseudotime_key"] == "dpt_pseudotime"
     assert meta["lambda"] == 0.5
     assert meta["basis"]["p"] == m.p
-    assert meta["backend"] == "statsmodels_glmgam"
+    assert meta["backend"] == "jaxgamx"
     assert meta["nonfinite"] == "error"
 
 
@@ -223,21 +223,6 @@ def test_deviance_explained_vector(adata_small_pt):
     assert set(["g0", "g1", "g2"]).issubset(set(de.index))
     # Values should be finite; can be negative in principle, so just check finiteness
     assert np.isfinite(de.loc[["g0", "g1", "g2"]]).all()
-
-
-# ---------------------------
-# Alpha (method-of-moments)
-# ---------------------------
-
-
-def test_alpha_mom_nonnegative_and_simple_cases():
-    y = np.array([0, 0, 0, 0], dtype=float)
-    a0 = PseudotimeGAM._alpha_mom(y)
-    assert a0 >= 1e-10
-
-    y2 = np.array([1, 2, 3, 4, 5], dtype=float)
-    a2 = PseudotimeGAM._alpha_mom(y2)
-    assert a2 >= 1e-10
 
 
 # ---------------------------
