@@ -205,15 +205,6 @@ class PseudotimeGAM:
         }
 
     # ----------------------- fitting & prediction -----------------------
-    @staticmethod
-    def _alpha_mom(y: np.ndarray) -> float:
-        """Compatibility helper: method-of-moments NB2 dispersion (alpha)."""
-        m = float(np.mean(y))
-        v = float(np.var(y, ddof=1)) if y.size > 1 else 0.0
-        if m <= 0.0:
-            return 1.0
-        return float(max(1e-10, (v - m) / (m**2 + 1e-12)))
-
     def fit(self, genes=None, *, store_cov: bool = False) -> None:
         """Fit per gene and write results back to AnnData.
 
@@ -358,6 +349,7 @@ class PseudotimeGAM:
         except Exception as e:
             raise RuntimeError("No fitted model for this gene. Call .fit() first.") from e
 
+        # covariate names for prediction frame construction
         covs = [] if self.covariates is None else [str(c) for c in self.covariates]
 
         # default to training design matrix

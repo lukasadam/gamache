@@ -226,21 +226,6 @@ def test_deviance_explained_vector(adata_small_pt):
 
 
 # ---------------------------
-# Alpha (method-of-moments)
-# ---------------------------
-
-
-def test_alpha_mom_nonnegative_and_simple_cases():
-    y = np.array([0, 0, 0, 0], dtype=float)
-    a0 = PseudotimeGAM._alpha_mom(y)
-    assert a0 >= 1e-10
-
-    y2 = np.array([1, 2, 3, 4, 5], dtype=float)
-    a2 = PseudotimeGAM._alpha_mom(y2)
-    assert a2 >= 1e-10
-
-
-# ---------------------------
 # Layers / sparse / size factors
 # ---------------------------
 
