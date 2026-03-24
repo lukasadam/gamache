@@ -34,3 +34,4 @@ uv.lock
 *.h5
 *.h5ad
 *.pdf
+.history
